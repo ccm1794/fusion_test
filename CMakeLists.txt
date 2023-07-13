@@ -28,6 +28,7 @@ find_package(pcl_conversions REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(vision_msgs REQUIRED)
 find_package(visualization_msgs REQUIRED)
+find_package(message_filters REQUIRED)
 
 set(dependencies
   rclcpp
@@ -43,6 +44,7 @@ set(dependencies
   vision_msgs
   visualization_msgs
   #visualization_msgs
+  message_filters
 )
 
 link_libraries(
@@ -66,10 +68,18 @@ ament_target_dependencies(base ${dependencies})
 add_executable(coord_test_2 src/coord_test_2.cpp)
 ament_target_dependencies(coord_test_2 ${dependencies})
 
+# add_executable(lidar-image_fusion_sync src/lidar-image_fusion_sync.cpp)
+# ament_target_dependencies(lidar-image_fusion_sync ${dependencies})
+
+add_executable(projection src/projection.cpp)
+ament_target_dependencies(projection ${dependencies})
+
 install(TARGETS
 plz
 base
 coord_test_2
+#lidar-image_fusion_sync
+projection
 DESTINATION lib/${PROJECT_NAME})
 
 install(DIRECTORY

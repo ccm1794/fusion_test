@@ -1,3 +1,5 @@
+// https://github.com/williamhyin/lidar_to_camera/blob/master/src/project_lidar_to_camera.cpp 투영은 이거 참고함
+
 #include <rclcpp/rclcpp.hpp>
 #include <mutex>
 #include <memory>
@@ -37,12 +39,14 @@ pcl::PointCloud<pcl::PointXYZI>::Ptr copy_raw_pcl_ptr(new pcl::PointCloud<pcl::P
 
 // 카메라 이미지
 cv::Mat image_color;
+cv::Mat overlay;
 cv::Mat copy_image_color;
 cv::Mat img_HSV;
 
 // Yolo Global parameter
 std::mutex mut_yolo;
 std::string Class_name;
+
 int obj_count;
 int yolo_num[10][5];
 
@@ -66,18 +70,18 @@ public:
 
   pthread_t tids1_; //스레드 아이디
 
-  int img_height = 240; // 왜 int는 못불러 오는가...
-  int img_width = 320;
+  int img_height = 480; // 왜 int는 못불러 오는가...
+  int img_width = 640;
 
   float maxlen =200.0;         /**< Max distance: LiDAR */
-  float minlen = 0.001;        /**< Min distance: LiDAR */
+  float minlen = 0.0001;        /**< Min distance: LiDAR */
   float max_FOV = CV_PI/4;     /**< Max FOV : Camera */
 
   sensor_msgs::msg::PointCloud2 colored_msg;
 
 public:
   ImageLiDARFusion()
-  : Node("plz")
+  : Node("projection")
   {
     RCLCPP_INFO(this->get_logger(), "------------ intialize ------------\n");
 
@@ -89,11 +93,11 @@ public:
     this->DistCoeff_vector = this->get_parameter("DistCoeff").as_double_array();
     // this->declare_parameter("ImageSize", vector<int>());
     // this->ImageSize_vector = this->get_parameter("ImagSize").get_value<vector<int>>();
-    set_param();
+    this->set_param();
 
     image_pub_ = this->create_publisher<sensor_msgs::msg::Image>("corrected_image", 10);
     image_sub_ = this->create_subscription<sensor_msgs::msg::Image>(
-       "video1", 100,
+       "/yolo_result", 100,
        [this](const sensor_msgs::msg::Image::SharedPtr msg) -> void
        {
          ImageCallback(msg);
@@ -165,20 +169,14 @@ void ImageLiDARFusion::set_param()
   
 
   //재가공 : 회전변환행렬, 평행이동행렬
-  // Mat Rlc = CameraExtrinsicMat(cv::Rect(0,0,3,3));
-  // Mat Tlc = CameraExtrinsicMat(cv::Rect(3,0,1,3));
-
-  Mat Rlc = (Mat_<double>(3,3) << 
-  0.168200519943361,-0.985731739097911, -0.006443882819514,
-   -0.047054867431876, -0.001499307965165, -0.998891181023536, 
-    0.984629079675058, 0.168317232066815, -0.046635660685941);
-
-  Mat Tlc = (Mat_<double>(3,1) << 
-  -0.023385116937154, 0.014708603285133, 0.112029387226516);
+  Mat Rlc = CameraExtrinsicMat(cv::Rect(0,0,3,3));
+  Mat Tlc = CameraExtrinsicMat(cv::Rect(3,0,1,3));
 
   cout << "Tlc : " << Tlc << "\n";
 
   cv::hconcat(Rlc, Tlc, this->concatedMat);
+
+  cout << "concatedMat : " << this->concatedMat << "\n";
 
   //재가공 : transformMat
   this->transformMat = this->CameraMat * this->concatedMat;
@@ -186,34 +184,42 @@ void ImageLiDARFusion::set_param()
   //재가공 : image_size
   // this->img_height = this->ImageSize_vector[0];
   // this->img_width = this->ImageSize_vector[1];
-  
+  RCLCPP_INFO(this->get_logger(), "ok");
 }
 
 void ImageLiDARFusion::ImageCallback(const sensor_msgs::msg::Image::SharedPtr msg)
 {
-  cv_bridge::CvImagePtr cv_ptr;
-  Mat image;
-  try
-  {
-    cv_ptr = cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::BGR8);
-  }
-  catch(cv_bridge::Exception& e)
-  {
-    RCLCPP_ERROR(this->get_logger(), "cv_bridge exception: %s", e.what());
-    return;
-  }
+  rclcpp::WallRate loop_rate(20.0);
+  // cv_bridge::CvImagePtr cv_ptr;
+  // Mat image;
+  // try
+  // {
+  //   cv_ptr = cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::BGR8);
+  // }
+  // catch(cv_bridge::Exception& e)
+  // {
+  //   RCLCPP_ERROR(this->get_logger(), "cv_bridge exception: %s", e.what());
+  //   return;
+  // }
+
+  Mat image(msg->height, msg->width, CV_8UC3, const_cast<unsigned char*>(msg->data.data()), msg->step);
 
   if(IS_IMAGE_CORRECTION)
   {
     mut_img.lock();
-    cv::undistort(cv_ptr->image, image_color, this->CameraMat, this->DistCoeff);
-    cv_ptr->image = image_color.clone();
+    // cv::undistort(cv_ptr->image, image_color, this->CameraMat, this->DistCoeff);
+    // cv_ptr->image = image_color.clone();
+
+    cv::undistort(image, image_color, this->CameraMat, this->DistCoeff);
+    image = image_color.clone();
+
     mut_img.unlock();
   }  
   else
   {
     mut_img.lock();
-    image_color = cv_ptr->image.clone();
+    //image_color = cv_ptr->image.clone();
+    image_color = image.clone();
     mut_img.unlock();
   }
   is_rec_image = true;
@@ -280,7 +286,11 @@ void ImageLiDARFusion::YOLOCallback(const vision_msgs::msg::Detection2DArray::Sh
       yolo_num[i][3] = msg->detections[i].bbox.center.y - (msg->detections[i].bbox.size_y)/2;
       yolo_num[i][4] = msg->detections[i].bbox.center.y + (msg->detections[i].bbox.size_y)/2;
       
-      // cout << yolo_num[i][0] << "," << yolo_num[i][1] <<  "," << yolo_num[i][2] << "," << yolo_num[i][3] << "," << yolo_num[i][4] << endl;
+      // cout << "color : " <<yolo_num[i][0] << "," 
+      // << "좌x : " << yolo_num[i][1] << "," 
+      // << "우x : " << yolo_num[i][2] << "," 
+      // << "하y : " << yolo_num[i][3] << "," 
+      // << "상y : " << yolo_num[i][4] << endl;
     }
     // cout << "-----------------" << endl;
     mut_yolo.unlock();
@@ -304,8 +314,9 @@ void * ImageLiDARFusion::publish_thread(void * args)
       mut_pc.unlock();
 
       mut_img.lock();
-      copy_image_color = image_color.clone();
-      cvtColor(copy_image_color, img_HSV, COLOR_BGR2HSV);
+      //copy_image_color = image_color.clone();
+      overlay = image_color.clone();
+      // cvtColor(copy_image_color, img_HSV, COLOR_BGR2HSV);
       mut_img.unlock();
 
       // mut_yolo.lock();
@@ -317,17 +328,18 @@ void * ImageLiDARFusion::publish_thread(void * args)
 
       // cout << "point cloud size : " << size << endl;
 
+      Mat image_show = image_color.clone();
+
       for (int i = 0; i < size ; i++)
       {
-        
-
         pcl::PointXYZI pointColor;
-
+        
         // **앵글이 카메라 수평 화각 안에 들어오는가?**
         pcl::PointXYZ temp_;
         temp_.x = copy_raw_pcl_ptr->points[i].x;
         temp_.y = copy_raw_pcl_ptr->points[i].y;
         temp_.z = copy_raw_pcl_ptr->points[i].z;
+
         float R_ = sqrt(pow(temp_.x,2) + pow(temp_.y,2)); // 라이다로부터 수평거리
         float azimuth_ = abs(atan2(temp_.y, temp_.x)); // 방위각
         float elevation_ = abs(atan2(R_, temp_.z)); // 고도각
@@ -338,7 +350,8 @@ void * ImageLiDARFusion::publish_thread(void * args)
 
         if(azimuth_ > (this_sub->max_FOV))
         {
-          pointColor.intensity=0;
+          // pointColor.intensity=0.;
+          continue; //처리하지 않겠다
         }
         else if(azimuth_ <= (this_sub->max_FOV))
         {
@@ -352,32 +365,8 @@ void * ImageLiDARFusion::publish_thread(void * args)
           cv::Mat newpos(this_sub->transformMat * pos); // 카메라 좌표로 변환한 것.
 
           //카메라 좌표(x,y) 생성
-          float y = (float)(newpos.at<double>(0, 0) / newpos.at<double>(2, 0));
-          float x = (float)(newpos.at<double>(1, 0) / newpos.at<double>(2, 0));
-
-          // vector<Point3f> aa;
-          // vector<Point2f> bb;
-          // bb.clear();
-          // aa = {Point3f(pointColor.x, pointColor.y, pointColor.z)};
-          // // aa.push_back(Point3f(pointColor.x, pointColor.y, pointColor.z));
-          // Mat Rlc = (Mat_<double>(3,3) << 
-          // 0.168200519943361,-0.985731739097911, -0.006443882819514,
-          // -0.047054867431876, -0.001499307965165, -0.998891181023536, 
-          // 0.984629079675058, 0.168317232066815, -0.046635660685941);
-
-          // Mat Tlc = (Mat_<double>(3,1) << 
-          // -0.023385116937154, 0.014708603285133, 0.112029387226516);
-
-          // Mat R;
-          // Rodrigues(Rlc, R);
-          // vector<cv::Point2f> pointColor_cam;
-          // projectPoints(aa, R, Tlc, this_sub->CameraMat, this_sub->DistCoeff, bb);
-          // float x = bb[0].x;
-          // float y = bb[0].y;
-
-          
-
-          // cout << "x : " << x << "   " << "y : " << y << endl;
+          float x = (float)(newpos.at<double>(0, 0) / newpos.at<double>(2, 0));
+          float y = (float)(newpos.at<double>(1, 0) / newpos.at<double>(2, 0));
 
           // trims viewport according to image size
           float dist_ = sqrt(pow(pointColor.x,2) + pow(pointColor.y,2) + pow(pointColor.z,2));
@@ -386,12 +375,25 @@ void * ImageLiDARFusion::publish_thread(void * args)
           {
             if (x >= 0 && x < this_sub->img_width && y >= 0 && y < this_sub->img_height)
             {
-              // cout << "2" << endl; // 여기서부터 코드가 안돈다.
-              // imread BGR (BITMAP)
+              // cout << "2" << endl; // 여기서부터 코드가 안돈다.->내부 파라미터가 올바르지 않아 그랬음
+              // imread BGR (BITMAP);
               int row = int(y);
               int column = int(x);
-              
+              pointColor.intensity = 0.9;
 
+              cv::Point pt;
+              pt.x = x;
+              pt.y = y;
+
+              float val = pointColor.x; // 라이다 좌표에서 x를 뜻함
+              float maxVal = 100.0;
+
+              int green = min(255, (int) (255 * abs((val - maxVal) / maxVal)));
+              int red = min(255, (int) (255 * (1 - abs((val - maxVal) / maxVal))));
+              cv::circle(overlay, pt, 1, cv::Scalar(0, green, red), -1);
+
+
+              // 욜로 박스치는 부분
               for(int j = 0; j < obj_count; j++)
               {
                 // cout << "3" << endl;
@@ -400,8 +402,24 @@ void * ImageLiDARFusion::publish_thread(void * args)
                   // cout << "4" << endl;
                   if ((row >= yolo_num[j][3]) && (row <= yolo_num[j][4]))
                   {
-                    //cerr << "Lavacon type is " << yolo_num[j][0] << endl;
-                    pointColor.intensity = yolo_num[j][0];
+                    // cerr << "Lavacon type is " << yolo_num[j][0] << endl;
+                    // pointColor.intensity = yolo_num[j][0];
+                    if(yolo_num[j][0] == 1)
+                    {
+                      pointColor.intensity = 0.7;
+                    }
+                    else if(yolo_num[j][0] == 2)
+                    {
+                      pointColor.intensity = 0.3;
+                    }
+                    //pointColor.intensity = 0.7;
+                    // cout << "욜로 상자!!! : " << endl;
+                    // cout << "color : " <<yolo_num[j][0] << "," 
+                    // << "좌x : " << yolo_num[j][1] << "," 
+                    // << "우x : " << yolo_num[j][2] << "," 
+                    // << "하y : " << yolo_num[j][3] << "," 
+                    // << "상y : " << yolo_num[j][4] << endl;
+                    // cout << "상자 안에 있는 좌표!!!! : " << row << "   ,   " <<column << endl;
                     break;
                   }
                 }
@@ -410,16 +428,28 @@ void * ImageLiDARFusion::publish_thread(void * args)
                   // cerr << "Lavacon type is 0" << endl;
                 }
               }
+
+
             }
           }
         }
       pc_xyzinten->push_back(pointColor);
       }
+
+      float opacity = 0.6;
+      cv::addWeighted(overlay, opacity, image_color, 1 - opacity, 0, image_color);
+
+      string windowName = "LiDAR data on image overlay";
+      cv::namedWindow(windowName, 3);
+      cv::imshow(windowName, image_color);
+      char ch = cv::waitKey(10);
+      if(ch == 27) break;
+
       for(int i = 0; i < 5; i++)
       {
         for(int j = 0; j < 10; j++)
         {
-          yolo_num[i][j] = 7;
+          yolo_num[i][j] = 0;
         }
       }
       pc_xyzinten->width = 1;
@@ -441,35 +471,4 @@ int main(int argc, char **argv)
   rclcpp::spin(node);
   rclcpp::shutdown();
   return 0;
-
-  // rclcpp::init(argc, argv);
-
-  // if(argc != 2)
-  // {
-  //   RCLCPP_ERROR(this->get_logger(), "Please input yaml file name");
-  //   return -1;
-  // }
-  // if(strcmp(argv[1], "true") == 0)
-  // {
-  //   IS_IMAGE_CORRECTION = true;
-  //   RCLCPP_INFO(this->get_logger(), "Image Correction ON");
-  // }
-  // else
-  // {
-  //   IS_IMAGE_CORRECTION = false;
-  //   RCLCPP_INFO(this->get_logger(), "Image Correction OFF");
-  // }
-
-  // auto node = std::make_shared<ImageLiDARFusion>();
-  // if (node == nullptr) {
-  //   RCLCPP_ERROR(node->get_logger(), "Failed to create node");
-  //   return 1;
-  // }
-  // auto executor = rclcpp::executors::MultiThreadedExecutor(4); //쓰레드 개수
-  // executor.add_node(node);
-  // executor.spin();
-
-  // rclcpp::shutdown();
-  // return 0;
 }
-

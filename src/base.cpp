@@ -214,7 +214,7 @@ void * ImageLiDARFusion::publish_thread(void * args)
             // cout << "dist : " << dist_ << endl;
             if (copy_image_color.at<cv::Vec3b>(row, column)[2] == false)
             {
-              cout << "실패!=================================================" << endl;
+              // cout << "실패!=================================================" << endl;
             }
             pointRGB.r = copy_image_color.at<cv::Vec3b>(row, column)[2];
             pointRGB.g = copy_image_color.at<cv::Vec3b>(row, column)[1];
