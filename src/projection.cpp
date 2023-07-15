@@ -97,7 +97,7 @@ public:
 
     image_pub_ = this->create_publisher<sensor_msgs::msg::Image>("corrected_image", 10);
     image_sub_ = this->create_subscription<sensor_msgs::msg::Image>(
-       "/yolo_result", 100,
+       "/video1", 100,
        [this](const sensor_msgs::msg::Image::SharedPtr msg) -> void
        {
          ImageCallback(msg);
@@ -105,7 +105,7 @@ public:
 
     LiDAR_pub_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("test_LiDAR", 10);
     LiDAR_sub_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(
-      "/velodyne_points", 100,
+      "/velodyne_points_filtered_center", 100,
       [this](const sensor_msgs::msg::PointCloud2::SharedPtr msg) -> void
       {
         LiDARCallback(msg);
@@ -189,29 +189,29 @@ void ImageLiDARFusion::set_param()
 
 void ImageLiDARFusion::ImageCallback(const sensor_msgs::msg::Image::SharedPtr msg)
 {
-  rclcpp::WallRate loop_rate(20.0);
-  // cv_bridge::CvImagePtr cv_ptr;
-  // Mat image;
-  // try
-  // {
-  //   cv_ptr = cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::BGR8);
-  // }
-  // catch(cv_bridge::Exception& e)
-  // {
-  //   RCLCPP_ERROR(this->get_logger(), "cv_bridge exception: %s", e.what());
-  //   return;
-  // }
+  // rclcpp::WallRate loop_rate(20.0);
+  cv_bridge::CvImagePtr cv_ptr;
+  Mat image;
+  try
+  {
+    cv_ptr = cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::BGR8);
+  }
+  catch(cv_bridge::Exception& e)
+  {
+    RCLCPP_ERROR(this->get_logger(), "cv_bridge exception: %s", e.what());
+    return;
+  }
 
-  Mat image(msg->height, msg->width, CV_8UC3, const_cast<unsigned char*>(msg->data.data()), msg->step);
+  //Mat image(msg->height, msg->width, CV_8UC3, const_cast<unsigned char*>(msg->data.data()), msg->step);
 
   if(IS_IMAGE_CORRECTION)
   {
     mut_img.lock();
-    // cv::undistort(cv_ptr->image, image_color, this->CameraMat, this->DistCoeff);
-    // cv_ptr->image = image_color.clone();
+    cv::undistort(cv_ptr->image, image_color, this->CameraMat, this->DistCoeff);
+    cv_ptr->image = image_color.clone();
 
-    cv::undistort(image, image_color, this->CameraMat, this->DistCoeff);
-    image = image_color.clone();
+    // cv::undistort(image, image_color, this->CameraMat, this->DistCoeff);
+    // image = image_color.clone();
 
     mut_img.unlock();
   }  
@@ -390,7 +390,7 @@ void * ImageLiDARFusion::publish_thread(void * args)
 
               int green = min(255, (int) (255 * abs((val - maxVal) / maxVal)));
               int red = min(255, (int) (255 * (1 - abs((val - maxVal) / maxVal))));
-              cv::circle(overlay, pt, 1, cv::Scalar(0, green, red), -1);
+              cv::circle(overlay, pt, 5, cv::Scalar(0, green, red), -1);
 
 
               // 욜로 박스치는 부분
