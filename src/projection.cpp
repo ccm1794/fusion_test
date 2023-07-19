@@ -5,6 +5,7 @@
 #include <memory>
 #include <thread>
 #include <pthread.h>
+#include <cmath>
 
 #include <sensor_msgs/msg/point_cloud.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
@@ -26,6 +27,13 @@
 #include <std_msgs/msg/int16.hpp>
 #include <vision_msgs/msg/detection2_d_array.hpp>
 
+#include <interfaces/msg/new_detection3_d_array.hpp>
+#include <vision_msgs/msg/bounding_box3_d.hpp>
+#include <vision_msgs/msg/detection3_d.hpp>
+#include <vision_msgs/msg/detection3_d_array.hpp>
+#include <vision_msgs/msg/object_hypothesis_with_pose.hpp>
+
+
 using namespace std;
 using namespace cv;
 
@@ -33,6 +41,7 @@ static bool IS_IMAGE_CORRECTION = true;
 
 std::mutex mut_img;
 std::mutex mut_pc;
+std::mutex mut_box;
 
 pcl::PointCloud<pcl::PointXYZI>::Ptr raw_pcl_ptr(new pcl::PointCloud<pcl::PointXYZI>);
 pcl::PointCloud<pcl::PointXYZI>::Ptr copy_raw_pcl_ptr(new pcl::PointCloud<pcl::PointXYZI>);
@@ -49,6 +58,9 @@ std::string Class_name;
 
 int obj_count;
 int yolo_num[10][5];
+
+int cluster_count;
+int box_coord[15][12];
 
 bool is_rec_image = false;
 bool is_rec_LiDAR = false;
@@ -124,6 +136,13 @@ public:
       {
         YOLOCallback(msg);
       });
+
+    lidar_box_sub_ = this->create_subscription<interfaces::msg::NewDetection3DArray>(
+      "/lidar_bbox", 10,
+      [this](const interfaces::msg::NewDetection3DArray::SharedPtr msg) -> void
+      {
+        BoxCallback(msg);
+      });
     
 
     int ret1 = pthread_create(&this->tids1_, NULL, publish_thread, this);
@@ -142,6 +161,7 @@ public:
   void LiDARCallback(const sensor_msgs::msg::PointCloud2::SharedPtr msg);
   void YOLOCountCallback(const std_msgs::msg::Int16::SharedPtr msg);
   void YOLOCallback(const vision_msgs::msg::Detection2DArray::SharedPtr msg);
+  void BoxCallback(const interfaces::msg::NewDetection3DArray::SharedPtr msg);
 
   static void * publish_thread(void * this_sub);
 
@@ -153,8 +173,113 @@ private:
   //yolo에서 (object 카운트), (클래스 이름, 박스 좌표) 받아오는 것 추가하기 
   rclcpp::Subscription<std_msgs::msg::Int16>::SharedPtr yolo_count_sub_;
   rclcpp::Subscription<vision_msgs::msg::Detection2DArray>::SharedPtr yolo_detect_sub_;
+  rclcpp::Subscription<interfaces::msg::NewDetection3DArray>::SharedPtr lidar_box_sub_;
 };
 
+
+void ImageLiDARFusion::BoxCallback(const interfaces::msg::NewDetection3DArray::SharedPtr msg)
+{
+  cluster_count = msg->len.data;
+  if (cluster_count != 0)
+  {
+    mut_box.lock();
+    pcl::PointCloud<pcl::PointXYZ> box_cloud;
+    for (int i = 0; i<cluster_count; i++)
+    {
+      float position_x = msg->detections[i].bbox.center.position.x;
+      float position_y = msg->detections[i].bbox.center.position.y;
+      float position_z = msg->detections[i].bbox.center.position.z;
+
+      float size_x = msg->detections[i].bbox.size.x;
+      float size_y = msg->detections[i].bbox.size.y;
+      float size_z = msg->detections[i].bbox.size.z;
+
+      pcl::PointXYZ box_point1;
+      pcl::PointXYZ box_point2;
+      pcl::PointXYZ box_point3;
+      pcl::PointXYZ box_point4;
+
+      // if (position_y >= 0)
+      // {
+      //   box_point1.x = position_x - size_x/2; //뒤를 보면 안된다
+      //   box_point1.y = position_y + size_y/2;
+      //   box_point1.z = position_z - size_z/2;
+
+      //   box_point2.x = position_x + size_x/2;
+      //   box_point2.y = position_y - size_y/2;
+      //   box_point2.z = position_z - size_z/2;
+
+      //   box_point3.x = position_x + size_x/2;
+      //   box_point3.y = position_y - size_y/2;
+      //   box_point3.z = position_z + size_z/2;
+
+      //   box_point4.x = position_x - size_x/2;
+      //   box_point4.y = position_y + size_y/2;
+      //   box_point4.z = position_z + size_z/2;
+      // }
+      // else if (position_y < 0)
+      // {
+      //   box_point1.x = position_x - size_x/2; //뒤를 보면 안된다
+      //   box_point1.y = position_y - size_y/2;
+      //   box_point1.z = position_z - size_z/2;
+
+      //   box_point2.x = position_x + size_x/2;
+      //   box_point2.y = position_y + size_y/2;
+      //   box_point2.z = position_z - size_z/2;
+
+      //   box_point3.x = position_x + size_x/2;
+      //   box_point3.y = position_y + size_y/2;
+      //   box_point3.z = position_z + size_z/2;
+
+      //   box_point4.x = position_x - size_x/2;
+      //   box_point4.y = position_y - size_y/2;
+      //   box_point4.z = position_z + size_z/2;
+      // }
+      
+      if (position_y >= 0)
+      {
+        box_coord[i][0] = position_x - size_x/2; //뒤를 보면 안된다
+        box_coord[i][1] = position_y + size_y/2;
+        box_coord[i][2] = position_z - size_z/2;
+
+        box_coord[i][3] = position_x + size_x/2;  // x
+        box_coord[i][4] = position_y - size_y/2;  // y
+        box_coord[i][5] = position_z - size_z/2;  // z
+
+        box_coord[i][6] = position_x + size_x/2;
+        box_coord[i][7] = position_y - size_y/2;
+        box_coord[i][8] = position_z + size_z/2;
+
+        box_coord[i][9] = position_x - size_x/2;
+        box_coord[i][10] = position_y + size_y/2;
+        box_coord[i][11] = position_z + size_z/2;
+      }
+      else if (position_y < 0)
+      {
+        box_coord[i][0] = position_x - size_x/2; //뒤를 보면 안된다
+        box_coord[i][1] = position_y - size_y/2;
+        box_coord[i][2] = position_z - size_z/2;
+
+        box_coord[i][3] = position_x + size_x/2;
+        box_coord[i][4] = position_y + size_y/2;
+        box_coord[i][5] = position_z - size_z/2;
+
+        box_coord[i][6] = position_x + size_x/2;
+        box_coord[i][7] = position_y + size_y/2;
+        box_coord[i][8] = position_z + size_z/2;
+
+        box_coord[i][8] = position_x - size_x/2;
+        box_coord[i][10] = position_y - size_y/2;
+        box_coord[i][11] = position_z + size_z/2;
+      }
+      box_cloud.push_back(box_point1);
+      box_cloud.push_back(box_point2);
+      box_cloud.push_back(box_point3);
+      box_cloud.push_back(box_point4);
+    }
+    mut_box.unlock();
+  }
+}
 
 void ImageLiDARFusion::set_param()
 {
@@ -316,6 +441,7 @@ void * ImageLiDARFusion::publish_thread(void * args)
       mut_img.lock();
       //copy_image_color = image_color.clone();
       overlay = image_color.clone();
+      overlay2 = image.color.clone();
       // cvtColor(copy_image_color, img_HSV, COLOR_BGR2HSV);
       mut_img.unlock();
 
@@ -392,7 +518,6 @@ void * ImageLiDARFusion::publish_thread(void * args)
               int red = min(255, (int) (255 * (1 - abs((val - maxVal) / maxVal))));
               cv::circle(overlay, pt, 5, cv::Scalar(0, green, red), -1);
 
-
               // 욜로 박스치는 부분
               for(int j = 0; j < obj_count; j++)
               {
@@ -412,15 +537,7 @@ void * ImageLiDARFusion::publish_thread(void * args)
                     {
                       pointColor.intensity = 0.3;
                     }
-                    //pointColor.intensity = 0.7;
-                    // cout << "욜로 상자!!! : " << endl;
-                    // cout << "color : " <<yolo_num[j][0] << "," 
-                    // << "좌x : " << yolo_num[j][1] << "," 
-                    // << "우x : " << yolo_num[j][2] << "," 
-                    // << "하y : " << yolo_num[j][3] << "," 
-                    // << "상y : " << yolo_num[j][4] << endl;
-                    // cout << "상자 안에 있는 좌표!!!! : " << row << "   ,   " <<column << endl;
-                    break;
+                    break; 
                   }
                 }
                 else
@@ -428,14 +545,30 @@ void * ImageLiDARFusion::publish_thread(void * args)
                   // cerr << "Lavacon type is 0" << endl;
                 }
               }
-
-
             }
           }
         }
       pc_xyzinten->push_back(pointColor);
       }
+      // 여기에 박스 투영시키기//
+      for (int i = 0; i<cluster_count; i++)
+      {
+        std::vector<cv::Point> points;
+        float p_1[4] = {box_coord[i][0], box_coord[i][1], box_coord[i][2], 1.0};
+        float p_2[4] = {box_coord[i][3], box_coord[i][4], box_coord[i][5], 1.0};
+        float p_3[4] = {box_coord[i][6], box_coord[i][7], box_coord[i][8], 1.0};
+        float p_4[4] = {box_coord[i][9], box_coord[i][10], box_coord[i][11], 1.0};
+        cv::Mat pos( 4, 1, CV_64F, p_1); // 라이다 좌표
 
+        //카메라 원점 xyz 좌표 (3,1)생성
+        cv::Mat newpos(this_sub->transformMat * pos); // 카메라 좌표로 변환한 것.
+
+        //카메라 좌표(x,y) 생성
+        float x = (float)(newpos.at<double>(0, 0) / newpos.at<double>(2, 0));
+        float y = (float)(newpos.at<double>(1, 0) / newpos.at<double>(2, 0));
+        box_coord[i][0]
+      }
+      //////////////////////
       float opacity = 0.6;
       cv::addWeighted(overlay, opacity, image_color, 1 - opacity, 0, image_color);
 
@@ -450,6 +583,13 @@ void * ImageLiDARFusion::publish_thread(void * args)
         for(int j = 0; j < 10; j++)
         {
           yolo_num[i][j] = 0;
+        }
+      }
+      for(int i = 0; i < 12; i++)
+      {
+        for(int j = 0; j < 15; j++)
+        {
+          box_coord[i][j] = 0;
         }
       }
       pc_xyzinten->width = 1;
