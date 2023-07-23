@@ -75,7 +75,7 @@ public:
 
   float maxlen =200.0;         /**< Max distance: LiDAR */
   float minlen = 0.0001;        /**< Min distance: LiDAR */
-  float max_FOV = CV_PI/2;     /**< Max FOV : Camera */
+  float max_FOV = CV_PI/4;     /**< Max FOV : Camera */
 
   sensor_msgs::msg::PointCloud2 colored_msg;
 
@@ -105,7 +105,7 @@ public:
 
     LiDAR_pub_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("test_LiDAR", 10);
     LiDAR_sub_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(
-      "/velodyne_points_filtered_center", 100,
+      "/velodyne_points", 100,
       [this](const sensor_msgs::msg::PointCloud2::SharedPtr msg) -> void
       {
         LiDARCallback(msg);

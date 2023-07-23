@@ -29,6 +29,7 @@ find_package(geometry_msgs REQUIRED)
 find_package(vision_msgs REQUIRED)
 find_package(visualization_msgs REQUIRED)
 find_package(message_filters REQUIRED)
+find_package(interfaces REQUIRED)
 
 set(dependencies
   rclcpp
@@ -45,6 +46,7 @@ set(dependencies
   visualization_msgs
   #visualization_msgs
   message_filters
+  interfaces
 )
 
 link_libraries(
