@@ -1,11 +1,16 @@
 // https://github.com/williamhyin/lidar_to_camera/blob/master/src/project_lidar_to_camera.cpp 투영은 이거 참고함
 
+
+// 이 코드는 브랜치
 #include <rclcpp/rclcpp.hpp>
 #include <mutex>
 #include <memory>
 #include <thread>
 #include <pthread.h>
 #include <cmath>
+#include <algorithm>
+#include <iostream>
+#include <vector>
 
 #include <sensor_msgs/msg/point_cloud.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
@@ -43,6 +48,10 @@ std::mutex mut_img;
 std::mutex mut_pc;
 std::mutex mut_box;
 
+// Yolo Global parameter
+std::mutex mut_yolo;
+std::string Class_name;
+
 pcl::PointCloud<pcl::PointXYZI>::Ptr raw_pcl_ptr(new pcl::PointCloud<pcl::PointXYZI>);
 pcl::PointCloud<pcl::PointXYZI>::Ptr copy_raw_pcl_ptr(new pcl::PointCloud<pcl::PointXYZI>);
 
@@ -52,15 +61,84 @@ cv::Mat overlay;
 cv::Mat copy_image_color;
 cv::Mat img_HSV;
 
-// Yolo Global parameter
-std::mutex mut_yolo;
-std::string Class_name;
+// 박스 투영을 위한 이미지
+cv::Mat img_box;
+cv::Mat box_overlay;
 
+int locker = 0;
 int obj_count;
 int yolo_num[10][5];
 
 int cluster_count;
-int box_coord[15][12];
+int box_coord[15][12]; // 이게 아니라 벡터로 저장할까?
+
+struct Box // 박스 좌표를 저장하기 위한 구조체
+{
+  float x;
+  float y;
+  float z;
+
+  float size_x;
+  float size_y;
+  float size_z;
+};
+
+struct Box_points
+{
+  float x1,y1,z1;
+  float x2,y2,z2;
+  float x3,y3,z3;
+  float x4,y4,z4;
+};
+
+bool compareBoxes(const Box& a, const Box& b) 
+{
+  return a.x < b.x;
+}
+
+Box_points calcBox_points(const Box &box)
+{
+  Box_points vertices;
+  if(box.y >= 0)
+  {
+    vertices.x1 = box.x - (box.size_x)/2;
+    vertices.y1 = box.y + (box.size_y)/2;
+    vertices.z1 = box.z - (box.size_z)/2;
+
+    vertices.x2 = box.x + (box.size_x)/2;
+    vertices.y2 = box.y - (box.size_y)/2;
+    vertices.z2 = box.z - (box.size_z)/2;
+
+    vertices.x3 = box.x + (box.size_x)/2;
+    vertices.y3 = box.y - (box.size_y)/2;
+    vertices.z3 = box.z + (box.size_z)/2;
+
+    vertices.x4 = box.x - (box.size_x)/2;
+    vertices.y4 = box.y + (box.size_y)/2;
+    vertices.z4 = box.z + (box.size_z)/2;
+  }
+  else if(box.y < 0)
+  {
+    vertices.x1 = box.x - (box.size_x)/2;
+    vertices.y1 = box.y - (box.size_y)/2;
+    vertices.z1 = box.z - (box.size_z)/2;
+
+    vertices.x2 = box.x + (box.size_x)/2;
+    vertices.y2 = box.y + (box.size_y)/2;
+    vertices.z2 = box.z - (box.size_z)/2;
+
+    vertices.x3 = box.x + (box.size_x)/2;
+    vertices.y3 = box.y + (box.size_y)/2;
+    vertices.z3 = box.z + (box.size_z)/2;
+
+    vertices.x4 = box.x - (box.size_x)/2;
+    vertices.y4 = box.y - (box.size_y)/2;
+    vertices.z4 = box.z + (box.size_z)/2;
+  }
+  return vertices;
+}
+
+std::vector<Box> boxes;
 
 bool is_rec_image = false;
 bool is_rec_LiDAR = false;
@@ -93,7 +171,7 @@ public:
 
 public:
   ImageLiDARFusion()
-  : Node("projection")
+  : Node("projection_box")
   {
     RCLCPP_INFO(this->get_logger(), "------------ intialize ------------\n");
 
@@ -144,7 +222,6 @@ public:
         BoxCallback(msg);
       });
     
-
     int ret1 = pthread_create(&this->tids1_, NULL, publish_thread, this);
     RCLCPP_INFO(this->get_logger(), "------------ intialize end------------\n");
 
@@ -152,7 +229,7 @@ public:
 
   ~ImageLiDARFusion()
   {
-    //pthread_join(this->tids1_, NULL);
+    pthread_join(this->tids1_, NULL);
   }
 
 public:
@@ -180,104 +257,45 @@ private:
 void ImageLiDARFusion::BoxCallback(const interfaces::msg::NewDetection3DArray::SharedPtr msg)
 {
   cluster_count = msg->len.data;
-  if (cluster_count != 0)
+  cout << "cluster count : " << cluster_count << endl;
+  // 메세지가 얼마나 빠르게 들어오나 확인용 : velodyne_cluster.cpp에서 쏠 때 시간과 큰 차이가 없음.(0.02초)
+  // RCLCPP_INFO(this->get_logger(), "cluster size : %d", cluster_count);
+  if (cluster_count != 0 && locker == 0)
   {
     mut_box.lock();
-    pcl::PointCloud<pcl::PointXYZ> box_cloud;
-    for (int i = 0; i<cluster_count; i++)
+    locker =1;
+    for(int i = 0; i < cluster_count; i++)
     {
-      float position_x = msg->detections[i].bbox.center.position.x;
-      float position_y = msg->detections[i].bbox.center.position.y;
-      float position_z = msg->detections[i].bbox.center.position.z;
-
-      float size_x = msg->detections[i].bbox.size.x;
-      float size_y = msg->detections[i].bbox.size.y;
-      float size_z = msg->detections[i].bbox.size.z;
-
-      pcl::PointXYZ box_point1;
-      pcl::PointXYZ box_point2;
-      pcl::PointXYZ box_point3;
-      pcl::PointXYZ box_point4;
-
-      // if (position_y >= 0)
-      // {
-      //   box_point1.x = position_x - size_x/2; //뒤를 보면 안된다
-      //   box_point1.y = position_y + size_y/2;
-      //   box_point1.z = position_z - size_z/2;
-
-      //   box_point2.x = position_x + size_x/2;
-      //   box_point2.y = position_y - size_y/2;
-      //   box_point2.z = position_z - size_z/2;
-
-      //   box_point3.x = position_x + size_x/2;
-      //   box_point3.y = position_y - size_y/2;
-      //   box_point3.z = position_z + size_z/2;
-
-      //   box_point4.x = position_x - size_x/2;
-      //   box_point4.y = position_y + size_y/2;
-      //   box_point4.z = position_z + size_z/2;
-      // }
-      // else if (position_y < 0)
-      // {
-      //   box_point1.x = position_x - size_x/2; //뒤를 보면 안된다
-      //   box_point1.y = position_y - size_y/2;
-      //   box_point1.z = position_z - size_z/2;
-
-      //   box_point2.x = position_x + size_x/2;
-      //   box_point2.y = position_y + size_y/2;
-      //   box_point2.z = position_z - size_z/2;
-
-      //   box_point3.x = position_x + size_x/2;
-      //   box_point3.y = position_y + size_y/2;
-      //   box_point3.z = position_z + size_z/2;
-
-      //   box_point4.x = position_x - size_x/2;
-      //   box_point4.y = position_y - size_y/2;
-      //   box_point4.z = position_z + size_z/2;
-      // }
-      
-      if (position_y >= 0)
+      Box box =
       {
-        box_coord[i][0] = position_x - size_x/2; //뒤를 보면 안된다
-        box_coord[i][1] = position_y + size_y/2;
-        box_coord[i][2] = position_z - size_z/2;
+        msg->detections[i].bbox.center.position.x, 
+        msg->detections[i].bbox.center.position.y, 
+        msg->detections[i].bbox.center.position.z, 
+        msg->detections[i].bbox.size.x, 
+        msg->detections[i].bbox.size.y, 
+        msg->detections[i].bbox.size.z
+      };
+      //cout << "반복문 내부 : " << i << endl;
+      boxes.push_back(box);
 
-        box_coord[i][3] = position_x + size_x/2;  // x
-        box_coord[i][4] = position_y - size_y/2;  // y
-        box_coord[i][5] = position_z - size_z/2;  // z
-
-        box_coord[i][6] = position_x + size_x/2;
-        box_coord[i][7] = position_y - size_y/2;
-        box_coord[i][8] = position_z + size_z/2;
-
-        box_coord[i][9] = position_x - size_x/2;
-        box_coord[i][10] = position_y + size_y/2;
-        box_coord[i][11] = position_z + size_z/2;
-      }
-      else if (position_y < 0)
-      {
-        box_coord[i][0] = position_x - size_x/2; //뒤를 보면 안된다
-        box_coord[i][1] = position_y - size_y/2;
-        box_coord[i][2] = position_z - size_z/2;
-
-        box_coord[i][3] = position_x + size_x/2;
-        box_coord[i][4] = position_y + size_y/2;
-        box_coord[i][5] = position_z - size_z/2;
-
-        box_coord[i][6] = position_x + size_x/2;
-        box_coord[i][7] = position_y + size_y/2;
-        box_coord[i][8] = position_z + size_z/2;
-
-        box_coord[i][8] = position_x - size_x/2;
-        box_coord[i][10] = position_y - size_y/2;
-        box_coord[i][11] = position_z + size_z/2;
-      }
-      box_cloud.push_back(box_point1);
-      box_cloud.push_back(box_point2);
-      box_cloud.push_back(box_point3);
-      box_cloud.push_back(box_point4);
+      // cout << "x : " << boxes[i].x << endl;
+      // cout << "y : " << boxes[i].y << endl;
+      // cout << "z : " << boxes[i].z << endl;
+      // cout << "size_x : " << boxes[i].size_x << endl;
+      // cout << "size_y : " << boxes[i].size_y << endl;
+      // cout << "size_z : " << boxes[i].size_z << endl;
+      // cout << "==========================" << endl;
+    }
+    std::sort(boxes.begin(), boxes.end(), compareBoxes); // 순서대로 나열해주는 코드
+    int k = 0;
+    for (const auto &Box : boxes)
+    {
+      //Box_points vertices = calcBox_points(Box);
+      cout << "도나? : " << k << endl;
+      k++;
     }
     mut_box.unlock();
+    // boxes.clear();
   }
 }
 
@@ -334,10 +352,6 @@ void ImageLiDARFusion::ImageCallback(const sensor_msgs::msg::Image::SharedPtr ms
     mut_img.lock();
     cv::undistort(cv_ptr->image, image_color, this->CameraMat, this->DistCoeff);
     cv_ptr->image = image_color.clone();
-
-    // cv::undistort(image, image_color, this->CameraMat, this->DistCoeff);
-    // image = image_color.clone();
-
     mut_img.unlock();
   }  
   else
@@ -411,11 +425,6 @@ void ImageLiDARFusion::YOLOCallback(const vision_msgs::msg::Detection2DArray::Sh
       yolo_num[i][3] = msg->detections[i].bbox.center.y - (msg->detections[i].bbox.size_y)/2;
       yolo_num[i][4] = msg->detections[i].bbox.center.y + (msg->detections[i].bbox.size_y)/2;
       
-      // cout << "color : " <<yolo_num[i][0] << "," 
-      // << "좌x : " << yolo_num[i][1] << "," 
-      // << "우x : " << yolo_num[i][2] << "," 
-      // << "하y : " << yolo_num[i][3] << "," 
-      // << "상y : " << yolo_num[i][4] << endl;
     }
     // cout << "-----------------" << endl;
     mut_yolo.unlock();
@@ -427,7 +436,6 @@ void ImageLiDARFusion::YOLOCallback(const vision_msgs::msg::Detection2DArray::Sh
 
 void * ImageLiDARFusion::publish_thread(void * args)
 {
-  cout << " o " << endl;
   ImageLiDARFusion * this_sub = (ImageLiDARFusion *)args;
   rclcpp::WallRate loop_rate(10.0);
   while(rclcpp::ok())
@@ -443,13 +451,15 @@ void * ImageLiDARFusion::publish_thread(void * args)
       mut_img.lock();
       //copy_image_color = image_color.clone();
       overlay = image_color.clone();
-      // overlay2 = image.color.clone();
-      // cvtColor(copy_image_color, img_HSV, COLOR_BGR2HSV);
       mut_img.unlock();
 
       // mut_yolo.lock();
       // copy_img_Yolo = img_Yolo;
       // mut_yolo.unlock();
+
+      mut_box.lock();
+      box_overlay = image_color.clone();
+      mut_box.unlock();
 
       pcl::PointCloud<pcl::PointXYZI>::Ptr pc_xyzinten(new pcl::PointCloud<pcl::PointXYZI>);
       const int size = copy_raw_pcl_ptr->points.size();
@@ -458,7 +468,7 @@ void * ImageLiDARFusion::publish_thread(void * args)
 
       Mat image_show = image_color.clone();
 
-      for (int i = 0; i < size ; i++)
+      for (int i = 0; i < size ; i++) //pointclouds 투영
       {
         pcl::PointXYZI pointColor;
         
@@ -484,7 +494,7 @@ void * ImageLiDARFusion::publish_thread(void * args)
         else if(azimuth_ <= (this_sub->max_FOV))
         {
           //색깔점에 좌표 대입
-          cout << '1 ' << endl;
+          
           //라이다 좌표 행렬(4,1)
           double a_[4] = {pointColor.x, pointColor.y, pointColor.z, 1.0};
           cv::Mat pos( 4, 1, CV_64F, a_); // 라이다 좌표
@@ -503,7 +513,7 @@ void * ImageLiDARFusion::publish_thread(void * args)
           {
             if (x >= 0 && x < this_sub->img_width && y >= 0 && y < this_sub->img_height)
             {
-              cout << "2" << endl; // 여기서부터 코드가 안돈다.->내부 파라미터가 올바르지 않아 그랬음
+              // cout << "2" << endl; // 여기서부터 코드가 안돈다.->내부 파라미터가 올바르지 않아 그랬음
               // imread BGR (BITMAP);
               int row = int(y);
               int column = int(x);
@@ -552,27 +562,63 @@ void * ImageLiDARFusion::publish_thread(void * args)
         }
       pc_xyzinten->push_back(pointColor);
       }
-      // // 여기에 박스 투영시키기//
-      // for (int i = 0; i<cluster_count; i++)
-      // {
-      //   std::vector<cv::Point> points;
-      //   float p_1[4] = {box_coord[i][0], box_coord[i][1], box_coord[i][2], 1.0};
-      //   float p_2[4] = {box_coord[i][3], box_coord[i][4], box_coord[i][5], 1.0};
-      //   float p_3[4] = {box_coord[i][6], box_coord[i][7], box_coord[i][8], 1.0};
-      //   float p_4[4] = {box_coord[i][9], box_coord[i][10], box_coord[i][11], 1.0};
-      //   cv::Mat pos( 4, 1, CV_64F, p_1); // 라이다 좌표
 
-      //   //카메라 원점 xyz 좌표 (3,1)생성
-      //   cv::Mat newpos(this_sub->transformMat * pos); // 카메라 좌표로 변환한 것.
 
-      //   //카메라 좌표(x,y) 생성
-      //   float x = (float)(newpos.at<double>(0, 0) / newpos.at<double>(2, 0));
-      //   float y = (float)(newpos.at<double>(1, 0) / newpos.at<double>(2, 0));
-      //   box_coord[i][0]
-      // }
-      //////////////////////
+//======================================================================================
+      //for (const auto& Box : boxes) //boxes의 좌표 투영 - for문에 진입하지 못한다.
+      // for(int i = 0; i < cluster_count; i++)
+      for (const auto& Box : boxes)
+      {
+        
+        Box_points vertices = calcBox_points(Box);
+        double box_1[4] = {vertices.x1, vertices.y1, vertices.z1, 1.0};
+        double box_2[4] = {vertices.x2, vertices.y2, vertices.z2, 1.0};
+        double box_3[4] = {vertices.x3, vertices.y3, vertices.z3, 1.0};
+        double box_4[4] = {vertices.x4, vertices.y4, vertices.z4, 1.0};
+
+
+        cv::Mat pos1( 4, 1, CV_64F, box_1); // 3차원 좌표
+        cv::Mat pos2( 4, 1, CV_64F, box_2);
+        cv::Mat pos3( 4, 1, CV_64F, box_3);
+        cv::Mat pos4( 4, 1, CV_64F, box_4);
+
+        //카메라 원점 xyz 좌표 (3,1)생성
+        cv::Mat newpos1(this_sub->transformMat * pos1); // 카메라 좌표로 변환한 것.
+        cv::Mat newpos2(this_sub->transformMat * pos2);
+        cv::Mat newpos3(this_sub->transformMat * pos3);
+        cv::Mat newpos4(this_sub->transformMat * pos4);
+
+        //카메라 좌표(x,y) 생성
+        float x1 = (float)(newpos1.at<double>(0, 0) / newpos1.at<double>(2, 0));
+        float y1 = (float)(newpos1.at<double>(1, 0) / newpos1.at<double>(2, 0));
+
+        float x2 = (float)(newpos2.at<double>(0, 0) / newpos2.at<double>(2, 0));
+        float y2 = (float)(newpos2.at<double>(1, 0) / newpos2.at<double>(2, 0));
+
+        float x3 = (float)(newpos3.at<double>(0, 0) / newpos3.at<double>(2, 0));
+        float y3 = (float)(newpos3.at<double>(1, 0) / newpos3.at<double>(2, 0));
+
+        float x4 = (float)(newpos4.at<double>(0, 0) / newpos4.at<double>(2, 0));
+        float y4 = (float)(newpos4.at<double>(1, 0) / newpos4.at<double>(2, 0));
+
+        // cout << "x1 : " << x1 << " y1 : " << y1 << endl;
+        std::vector<cv::Point> projected_boxes =
+        {
+          cv::Point(x1, y1),
+          cv::Point(x2, y2),
+          cv::Point(x3, y3),
+          cv::Point(x4, y4)
+        };
+        // draw polygon
+        cv::polylines(box_overlay, projected_boxes, true, cv::Scalar(0, 255, 0), 2);
+      }
+      
+      boxes.clear();
+      locker = 0;
+//========================================================================================
       float opacity = 0.6;
       cv::addWeighted(overlay, opacity, image_color, 1 - opacity, 0, image_color);
+      cv::addWeighted(box_overlay, opacity, image_color, 1 - opacity, 0, image_color);
 
       string windowName = "LiDAR data on image overlay";
       cv::namedWindow(windowName, 3);
