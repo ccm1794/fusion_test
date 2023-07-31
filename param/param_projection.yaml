@@ -1,4 +1,4 @@
-projection:
+projection_box:
   ros__parameters:
     CameraExtrinsicMat: [ 0.56507085, -0.82433911, -0.03405843,  0.43936057,
                           -0.344807,   -0.19845388, -0.91745528,  0.56964691,

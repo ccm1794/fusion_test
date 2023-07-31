@@ -40,8 +40,10 @@ pcl::PointCloud<pcl::PointXYZI>::Ptr copy_raw_pcl_ptr(new pcl::PointCloud<pcl::P
 // 카메라 이미지
 cv::Mat image_color;
 cv::Mat overlay;
+cv::Mat overlay_origin;
 cv::Mat copy_image_color;
 cv::Mat img_HSV;
+cv::Mat img_origin;
 
 // Yolo Global parameter
 std::mutex mut_yolo;
@@ -75,7 +77,7 @@ public:
 
   float maxlen =200.0;         /**< Max distance: LiDAR */
   float minlen = 0.0001;        /**< Min distance: LiDAR */
-  float max_FOV = CV_PI/2;     /**< Max FOV : Camera */
+  float max_FOV = CV_PI/4;     /**< Max FOV : Camera */
 
   sensor_msgs::msg::PointCloud2 colored_msg;
 
@@ -97,7 +99,7 @@ public:
 
     image_pub_ = this->create_publisher<sensor_msgs::msg::Image>("corrected_image", 10);
     image_sub_ = this->create_subscription<sensor_msgs::msg::Image>(
-       "/video1", 100,
+       "/yolo_result", 100,
        [this](const sensor_msgs::msg::Image::SharedPtr msg) -> void
        {
          ImageCallback(msg);
@@ -105,7 +107,7 @@ public:
 
     LiDAR_pub_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("test_LiDAR", 10);
     LiDAR_sub_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(
-      "/velodyne_points_filtered_center", 100,
+      "/velodyne_points", 100,
       [this](const sensor_msgs::msg::PointCloud2::SharedPtr msg) -> void
       {
         LiDARCallback(msg);
@@ -203,7 +205,7 @@ void ImageLiDARFusion::ImageCallback(const sensor_msgs::msg::Image::SharedPtr ms
   // }
 
   Mat image(msg->height, msg->width, CV_8UC3, const_cast<unsigned char*>(msg->data.data()), msg->step);
-
+  // img_origin = image.clone();
   if(IS_IMAGE_CORRECTION)
   {
     mut_img.lock();
@@ -319,6 +321,9 @@ void * ImageLiDARFusion::publish_thread(void * args)
       // cvtColor(copy_image_color, img_HSV, COLOR_BGR2HSV);
       mut_img.unlock();
 
+      // mut_img.lock();
+      // overlay_origin = img_origin.clone();
+      // mut_img.unlock();
       // mut_yolo.lock();
       // copy_img_Yolo = img_Yolo;
       // mut_yolo.unlock();
@@ -390,8 +395,9 @@ void * ImageLiDARFusion::publish_thread(void * args)
 
               int green = min(255, (int) (255 * abs((val - maxVal) / maxVal)));
               int red = min(255, (int) (255 * (1 - abs((val - maxVal) / maxVal))));
-              cv::circle(overlay, pt, 5, cv::Scalar(0, green, red), -1);
 
+              cv::circle(overlay, pt, 1, cv::Scalar(0, green, red), -1);
+              //cv::circle(overlay_origin, pt, 1, cv::Scalar(0, green, red), -1);
 
               // 욜로 박스치는 부분
               for(int j = 0; j < obj_count; j++)
@@ -431,10 +437,13 @@ void * ImageLiDARFusion::publish_thread(void * args)
 
       float opacity = 0.6;
       cv::addWeighted(overlay, opacity, image_color, 1 - opacity, 0, image_color);
+      //cv::addWeighted(overlay_origin, opacity, img_origin, 1 - opacity, 0, img_origin);
+
 
       string windowName = "LiDAR data on image overlay";
       cv::namedWindow(windowName, 3);
       cv::imshow(windowName, image_color);
+      //cv::imshow("origin", img_origin);
       char ch = cv::waitKey(10);
       if(ch == 27) break;
 

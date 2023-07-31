@@ -61,6 +61,36 @@
         "typeindex": "cpp",
         "typeinfo": "cpp",
         "variant": "cpp",
-        "bit": "cpp"
-    }
+        "bit": "cpp",
+        "csignal": "cpp",
+        "future": "cpp",
+        "shared_mutex": "cpp"
+    },
+    "python.autoComplete.extraPaths": [
+        "/home/ccm/ros2_ws/install/velodyne_msgs/lib/python3.8/site-packages",
+        "/home/ccm/ros2_ws/install/object_detection/lib/python3.8/site-packages",
+        "/home/ccm/ros2_ws/install/interfaces/lib/python3.8/site-packages",
+        "/home/ccm/ros2_ws/install/examples_rclpy_minimal_subscriber/lib/python3.8/site-packages",
+        "/home/ccm/ros2_ws/install/examples_rclpy_minimal_service/lib/python3.8/site-packages",
+        "/home/ccm/ros2_ws/install/examples_rclpy_minimal_publisher/lib/python3.8/site-packages",
+        "/home/ccm/ros2_ws/install/examples_rclpy_minimal_client/lib/python3.8/site-packages",
+        "/home/ccm/ros2_ws/install/examples_rclpy_minimal_action_server/lib/python3.8/site-packages",
+        "/home/ccm/ros2_ws/install/examples_rclpy_minimal_action_client/lib/python3.8/site-packages",
+        "/home/ccm/ros2_ws/install/examples_rclpy_executors/lib/python3.8/site-packages",
+        "/opt/ros/foxy/lib/python3.8/site-packages"
+    ],
+    "python.analysis.extraPaths": [
+        "/home/ccm/ros2_ws/install/velodyne_msgs/lib/python3.8/site-packages",
+        "/home/ccm/ros2_ws/install/object_detection/lib/python3.8/site-packages",
+        "/home/ccm/ros2_ws/install/interfaces/lib/python3.8/site-packages",
+        "/home/ccm/ros2_ws/install/examples_rclpy_minimal_subscriber/lib/python3.8/site-packages",
+        "/home/ccm/ros2_ws/install/examples_rclpy_minimal_service/lib/python3.8/site-packages",
+        "/home/ccm/ros2_ws/install/examples_rclpy_minimal_publisher/lib/python3.8/site-packages",
+        "/home/ccm/ros2_ws/install/examples_rclpy_minimal_client/lib/python3.8/site-packages",
+        "/home/ccm/ros2_ws/install/examples_rclpy_minimal_action_server/lib/python3.8/site-packages",
+        "/home/ccm/ros2_ws/install/examples_rclpy_minimal_action_client/lib/python3.8/site-packages",
+        "/home/ccm/ros2_ws/install/examples_rclpy_executors/lib/python3.8/site-packages",
+        "/opt/ros/foxy/lib/python3.8/site-packages"
+    ],
+    "C_Cpp.errorSquiggles": "disabled"
 }

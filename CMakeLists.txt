@@ -76,12 +76,16 @@ ament_target_dependencies(coord_test_2 ${dependencies})
 add_executable(projection src/projection.cpp)
 ament_target_dependencies(projection ${dependencies})
 
+add_executable(projection_box src/projection_box.cpp)
+ament_target_dependencies(projection_box ${dependencies})
+
 install(TARGETS
 plz
 base
 coord_test_2
 #lidar-image_fusion_sync
 projection
+projection_box
 DESTINATION lib/${PROJECT_NAME})
 
 install(DIRECTORY

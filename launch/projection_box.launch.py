@@ -15,7 +15,7 @@ def generate_launch_description():
         default=os.path.join(
         get_package_share_directory('fusion_test'),
         'param',
-        'param_projection.yaml'))
+        'param_k_bub_box.yaml'))
     
     return LaunchDescription([
         DeclareLaunchArgument(
