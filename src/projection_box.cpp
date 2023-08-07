@@ -29,6 +29,7 @@
 
 //yolo header 추가하기
 #include <std_msgs/msg/int16.hpp>
+#include <std_msgs/msg/float32_multi_array.hpp>
 #include <vision_msgs/msg/detection2_d_array.hpp>
 
 #include <interfaces/msg/new_detection3_d_array.hpp>
@@ -40,7 +41,8 @@
 using namespace std;
 using namespace cv;
 
-struct Box // 박스 좌표를 저장하기 위한 구조체
+// 클러스터 박스 좌표를 저장하기 위한 구조체
+struct Box 
 {
   float x;
   float y;
@@ -51,6 +53,7 @@ struct Box // 박스 좌표를 저장하기 위한 구조체
   float size_z;
 };
 
+// 클러스터 박스 처리를 위한 구조체
 struct Box_points
 {
   float x1,y1,z1;
@@ -59,11 +62,23 @@ struct Box_points
   float x4,y4,z4;
 };
 
+// 욜로 박스 저장할 구조체
+struct Box_yolo
+{
+  float x1;
+  float x2;
+  float y1;
+  float y2;
+  int color;
+};
+
+// 클러스터 박스를 크기순대로 정렬하기 위한 함수
 bool compareBoxes(const Box& a, const Box& b) 
 {
   return a.x < b.x;
 }
 
+// 클러스터 박스의 8개의 꼭지점을 구하는 함수
 Box_points calcBox_points(const Box &box)
 {
   Box_points vertices;
@@ -87,39 +102,53 @@ Box_points calcBox_points(const Box &box)
   }
   else if(box.y < 0)
   {
-    vertices.x1 = box.x - (box.size_x)/2;
-    vertices.y1 = box.y - (box.size_y)/2;
+    vertices.x1 = box.x + (box.size_x)/2;
+    vertices.y1 = box.y + (box.size_y)/2;
     vertices.z1 = box.z - (box.size_z)/2;
 
-    vertices.x2 = box.x + (box.size_x)/2;
-    vertices.y2 = box.y + (box.size_y)/2;
+    vertices.x2 = box.x - (box.size_x)/2;
+    vertices.y2 = box.y - (box.size_y)/2;
     vertices.z2 = box.z - (box.size_z)/2;
 
-    vertices.x3 = box.x + (box.size_x)/2;
-    vertices.y3 = box.y + (box.size_y)/2;
+    vertices.x3 = box.x - (box.size_x)/2;
+    vertices.y3 = box.y - (box.size_y)/2;
     vertices.z3 = box.z + (box.size_z)/2;
 
-    vertices.x4 = box.x - (box.size_x)/2;
-    vertices.y4 = box.y - (box.size_y)/2;
+    vertices.x4 = box.x + (box.size_x)/2;
+    vertices.y4 = box.y + (box.size_y)/2;
     vertices.z4 = box.z + (box.size_z)/2;
   }
   return vertices;
 }
 
-std::vector<Box> boxes;
-//==============전역 변수넣기================
-std::mutex mut_img;
-std::mutex mut_img1;
-std::mutex mut_img2;
-std::mutex mut_box;
-std::mutex mut_yolo;
+// iou 계산
+float get_iou(const Box_yolo &a, const Box_yolo &b)
+{
+  float x_left = max(a.x1, b.x1);
+  float y_top = max(a.y1, b.y1);
+  float x_right = min(a.x2, b.x2);
+  float y_bottom = min(a.y2, b.y2);
 
-int yolo_num[10][5];
-//========================================
+  if (x_right < x_left || y_bottom < y_top)
+    return 0.0f;
+  
+  float intersection_area = (x_right - x_left) * (y_bottom - y_top);
+
+  float area1 = (a.x2 - a.x1) * (a.y2 - a.y1);
+  float area2 = (b.x2 - b.x1) * (b.y2 - b.y1);
+
+  float iou = intersection_area / (area1 + area2 - intersection_area);
+
+  return iou;
+}
+
+std::mutex mut_img, mut_img1, mut_img2, mut_box, mut_yolo;
+std::vector<Box> boxes;
+std::vector<Box_yolo> boxes_yolo;
+
 class ImageLiDARFusion : public rclcpp::Node
 {
 public:
-//==============변수넣기================
   Mat transformMat;
   Mat CameraMat;
   Mat DistCoeff;
@@ -129,6 +158,7 @@ public:
 
   Mat yolo_overlay; // 욜로박스 오버레이
   Mat box_overlay; // 클러스터박스 오버레이
+  Mat overlay; // 전체 오버레이
 
   bool is_rec_image = false;
   bool is_rec_box = false;
@@ -137,12 +167,14 @@ public:
   int cluster_count;
 
   int box_locker = 0; // box_Callback 할 때 lock해주는 변수
+  int yolo_locker = 0;
 
   vector<double> CameraExtrinsic_vector;
   vector<double> CameraMat_vector;
   vector<double> DistCoeff_vector;
-//====================================
+
   pthread_t tids1_;
+  // pthread_t tids2_;
 
   int img_height = 480;
   int img_width = 640;
@@ -150,7 +182,6 @@ public:
   float maxlen =200.0;         /**< Max distance: LiDAR */
   float minlen = 0.0001;        /**< Min distance: LiDAR */
   float max_FOV = CV_PI/4;     /**< Max FOV : Camera */
-
 public:
   ImageLiDARFusion()
   : Node("projection_box")
@@ -177,12 +208,12 @@ public:
       });
     
     // yolo_count인데 사용자 정의 메세지로 detection2darray랑 묶기
-    yolo_count_sub_ = this->create_subscription<std_msgs::msg::Int16>(
-      "yolo_count", 10,
-      [this](const std_msgs::msg::Int16::SharedPtr msg) -> void
-      {
-        YOLOCountCallback(msg);
-      });
+    // yolo_count_sub_ = this->create_subscription<std_msgs::msg::Int16>(
+    //   "yolo_count", 10,
+    //   [this](const std_msgs::msg::Int16::SharedPtr msg) -> void
+    //   {
+    //     YOLOCountCallback(msg);
+    //   });
 
     // 실질적인 yolo 박스 subscribe
     yolo_detect_sub_ = this->create_subscription<vision_msgs::msg::Detection2DArray>(
@@ -200,8 +231,13 @@ public:
         BoxCallback(msg);
       });
 
+    // 결과 퍼블리시
+    publish_cone_ = this->create_publisher<std_msgs::msg::Float32MultiArray>(
+      "/projection_box", 10);
+
     // 메인 쓰레드 실행
     int ret1 = pthread_create(&this->tids1_, NULL, publish_thread, this);
+    // int ret2 = pthread_create(&this->tids2_, NULL, publish_thread2, this);
 
     RCLCPP_INFO(this->get_logger(), "------------initialize end------------\n");
   }
@@ -209,22 +245,25 @@ public:
   ~ImageLiDARFusion()
   {
     pthread_join(this->tids1_, NULL);
+    // pthread_join(this->tids2_, NULL);
   }
 
 public:
   void set_param();
   void ImageCallback(const sensor_msgs::msg::Image::SharedPtr msg);
-  void YOLOCountCallback(const std_msgs::msg::Int16::SharedPtr msg);
+  // void YOLOCountCallback(const std_msgs::msg::Int16::SharedPtr msg);
   void YOLOCallback(const vision_msgs::msg::Detection2DArray::SharedPtr msg);
   void BoxCallback(const interfaces::msg::NewDetection3DArray::SharedPtr msg);
 
-  static void * publish_thread(void * this_sub);
+  static void * publish_thread(void * this_sub); // 투영
+  // static void * publish_thread2(void * this_sub); // iou계산
 
 private:
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr image_sub_;
-  rclcpp::Subscription<std_msgs::msg::Int16>::SharedPtr yolo_count_sub_;
+  // rclcpp::Subscription<std_msgs::msg::Int16>::SharedPtr yolo_count_sub_;
   rclcpp::Subscription<vision_msgs::msg::Detection2DArray>::SharedPtr yolo_detect_sub_;
   rclcpp::Subscription<interfaces::msg::NewDetection3DArray>::SharedPtr lidar_box_sub_;  
+  rclcpp::Publisher<std_msgs::msg::Float32MultiArray>::SharedPtr publish_cone_;
 };
 
 // 파라미터 설정
@@ -282,22 +321,24 @@ void ImageLiDARFusion::ImageCallback(const sensor_msgs::msg::Image::SharedPtr ms
   imshow("undistorted image", this->image_undistorted);
 }
 
-// 나중에 detection2darray랑 합쳐서 사용자 정의 메세지 만들기
-void ImageLiDARFusion::YOLOCountCallback(const std_msgs::msg::Int16::SharedPtr msg)
-{
-  this->obj_count = msg->data;
-}
+// 나중에 detection2darray랑 합쳐서 사용자 정의 메세지 만들기 -> 만들 필요 없음
+// void ImageLiDARFusion::YOLOCountCallback(const std_msgs::msg::Int16::SharedPtr msg)
+// {
+//   this->obj_count = msg->data;
+// }
 
 // yolo 박스 설정
 void ImageLiDARFusion::YOLOCallback(const vision_msgs::msg::Detection2DArray::SharedPtr msg)
 {
-  if (obj_count != 0)
+  if (msg->detections.size() != 0 && this->yolo_locker == 0)
   {
+    this->yolo_locker = 1;
     std::string Class_name;
-
+    // cout << "yolo count : " << this->obj_count << endl;
+    // cout << "sizeof() : " << msg->detections.size() << endl;
     mut_yolo.lock();
 
-    for (int i = 0; i <this->obj_count; i++)
+    for (int i = 0; i <msg->detections.size(); i++)
     {
       Class_name = msg->detections[i].results[0].id; // 클래스 가져오기
 
@@ -315,11 +356,16 @@ void ImageLiDARFusion::YOLOCallback(const vision_msgs::msg::Detection2DArray::Sh
       {
         color = 0;
       }
-      yolo_num[i][0] = color;
-      yolo_num[i][1] = msg->detections[i].bbox.center.x - (msg->detections[i].bbox.size_x)/2; // x1
-      yolo_num[i][2] = msg->detections[i].bbox.center.x + (msg->detections[i].bbox.size_x)/2; // x2
-      yolo_num[i][3] = msg->detections[i].bbox.center.y - (msg->detections[i].bbox.size_y)/2; // y1
-      yolo_num[i][4] = msg->detections[i].bbox.center.y + (msg->detections[i].bbox.size_y)/2; // y2
+
+      Box_yolo box_yolo = 
+      {
+        msg->detections[i].bbox.center.x - (msg->detections[i].bbox.size_x)/2, // x1
+        msg->detections[i].bbox.center.x + (msg->detections[i].bbox.size_x)/2, // x2
+        msg->detections[i].bbox.center.y - (msg->detections[i].bbox.size_y)/2, // y1
+        msg->detections[i].bbox.center.y + (msg->detections[i].bbox.size_y)/2, // y2
+        color
+      };
+      boxes_yolo.push_back(box_yolo);
     }
     mut_yolo.unlock();
   }
@@ -329,11 +375,11 @@ void ImageLiDARFusion::YOLOCallback(const vision_msgs::msg::Detection2DArray::Sh
 }
 
 // Box callback
-void ImageLiDARFusion::BoxCallback(const interfaces::msg::NewDetection3DArray::SharedPtr msg)
+void ImageLiDARFusion::BoxCallback(const interfaces::msg::NewDetection3DArray::SharedPtr msg) // 사용자 정의 인터페이스 만들 필요 없다
 {
-  this->cluster_count = msg->len.data;
+  this->cluster_count = msg->detections.size();
 
-  cout << "cluster count : " << cluster_count << endl;
+  // cout << "cluster count : " << cluster_count << endl;
   // 메세지가 얼마나 빠르게 들어오나 확인용 : velodyne_cluster.cpp에서 쏠 때 시간과 큰 차이가 없음.(0.02초)
   // RCLCPP_INFO(this->get_logger(), "cluster size : %d", cluster_count);  
 
@@ -342,36 +388,38 @@ void ImageLiDARFusion::BoxCallback(const interfaces::msg::NewDetection3DArray::S
     mut_box.lock();
     this->box_locker = 1;
     for(int i = 0; i < this->cluster_count; i++)
-    {
-      Box box = 
+    { 
+      if(msg->detections[i].bbox.size.y / msg->detections[i].bbox.size.z < 4 && msg->detections[i].bbox.size.x / msg->detections[i].bbox.size.z < 4)
       {
-        msg->detections[i].bbox.center.position.x, 
-        msg->detections[i].bbox.center.position.y, 
-        msg->detections[i].bbox.center.position.z, 
-        msg->detections[i].bbox.size.x, 
-        msg->detections[i].bbox.size.y, 
-        msg->detections[i].bbox.size.z        
-      };
-
-      boxes.push_back(box);
+        Box box = 
+        {
+          msg->detections[i].bbox.center.position.x, 
+          msg->detections[i].bbox.center.position.y, 
+          msg->detections[i].bbox.center.position.z, 
+          msg->detections[i].bbox.size.x, 
+          msg->detections[i].bbox.size.y * 2,  // 투영되는 박스 크기를 임의로 변형
+          msg->detections[i].bbox.size.z * 1.5 // 투영되는 박스 크기를 임의로 변형
+        };
+        boxes.push_back(box);
+      }
     }
-    std::sort(boxes.begin(), boxes.end(), compareBoxes); // 순서대로 나열해주는 코드
+    // std::sort(boxes.begin(), boxes.end(), compareBoxes); // 순서대로 나열해주는 코드
 
     // 박스가 제대로 돌고있는지 확인하는 용도, 한 번 처리할 때 박스가 두 번 이상 들어오는지 확인하기 위한 용도
-    int k = 0;
-    for (const auto &Box : boxes)
-    {
-      //Box_points vertices = calcBox_points(Box);
-      cout << "도나? : " << k << endl;
-      k++;
-    }
+    // int k = 0;
+    // for (const auto &Box : boxes)
+    // {
+    //   //Box_points vertices = calcBox_points(Box);
+    //   cout << "도나? : " << k << endl;
+    //   k++;
+    // }
     mut_box.unlock();    
 
     this->is_rec_box = true;
   }
-
 }
 
+// 박스 투영
 void * ImageLiDARFusion::publish_thread(void * args)
 {
   ImageLiDARFusion * this_sub = (ImageLiDARFusion *)args;
@@ -380,15 +428,13 @@ void * ImageLiDARFusion::publish_thread(void * args)
   {
     if (this_sub->is_rec_image && this_sub->is_rec_box)
     {
-      mut_img1.lock();
-      this_sub->yolo_overlay = this_sub->image_undistorted.clone();
-      mut_img1.unlock();
-
       mut_img2.lock();
-      this_sub->box_overlay = this_sub->image_undistorted.clone();
+      this_sub->overlay = this_sub->image_undistorted.clone();
       mut_img2.unlock();
 
 //=======================================클러스터 박스 가져와서 투영====================================
+      std::vector<Box_yolo> boxes_2d_cluster; // iou 비교용
+
       for (const auto& Box : boxes)
       {
         Box_points vertices = calcBox_points(Box);
@@ -421,81 +467,119 @@ void * ImageLiDARFusion::publish_thread(void * args)
 
         float x4 = (float)(newpos4.at<double>(0, 0) / newpos4.at<double>(2, 0));
         float y4 = (float)(newpos4.at<double>(1, 0) / newpos4.at<double>(2, 0));
-
-        // cout << "x1 : " << x1 << " y1 : " << y1 << endl;
-        std::vector<cv::Point> projected_boxes =
+  
+        if (Box.y >= 0)
         {
-          cv::Point(x1, y1),
-          cv::Point(x2, y2),
-          cv::Point(x3, y3),
-          cv::Point(x4, y4)
-        };
-
-        // draw polygon
-        cv::polylines(this_sub->box_overlay, projected_boxes, true, cv::Scalar(0, 255, 0), 2);        
+          cv::rectangle(this_sub->overlay, Rect(Point(x4, y3), Point(x2, y1)), Scalar(0, 255, 0), 2, 8, 0);
+          Box_yolo box_basic = { x4, x2, y3, y1 };
+          boxes_2d_cluster.push_back(box_basic);
+        }
+        else if (Box.y < 0)
+        {
+          cv::rectangle(this_sub->overlay, Rect(Point(x4, y4), Point(x2, y2)), Scalar(0, 255, 0), 2, 8, 0);
+          Box_yolo box_basic = { x4, x2, y4, y2 };
+          boxes_2d_cluster.push_back(box_basic);
+        }
       }
-      // this_sub->box_locker = 0;
-      // boxes.clear();
-//===============================================================================================
-//========================================욜로박스 투영=============================================      
-      for (int j = 0; j < this_sub->obj_count; j++)
+      //===============================================================================================
+
+      //========================================욜로박스 투영=============================================      
+      for (const auto& Box : boxes_yolo) // iou는 Box 그 자체를 사용한다.
       {
-        float xx1 = yolo_num[j][1]; // x1
-        float xx2 = yolo_num[j][2]; // x2
-        float yy1 = yolo_num[j][3]; // y1
-        float yy2 = yolo_num[j][4]; // y2
-        
-        std::vector<cv::Point> projected_yolo = 
-        {
-          cv::Point(xx1, yy1),
-          cv::Point(xx2, yy2)
-        };
+        int xx1 = Box.x1;
+        int xx2 = Box.x2;
+        int yy1 = Box.y1;
+        int yy2 = Box.y2;
 
-        if (yolo_num[j][0] == 1)
+        if (Box.color == 1)
         {
-          cv::rectangle(this_sub->yolo_overlay, Rect(Point(xx1, yy1), Point(xx2, yy2)), Scalar(0, 0, 255), 1, 8, 0);
+          cv::rectangle(this_sub->overlay, Rect(Point(xx1, yy1), Point(xx2, yy2)), Scalar(0, 0, 255), 1, 8, 0);
         }
-        else if (yolo_num[j][0] == 2)
+        else if (Box.color == 2)
         {
-          cv::rectangle(this_sub->yolo_overlay, Rect(Point(xx1, yy1), Point(xx2, yy2)), Scalar(0, 0, 255), 1, 8, 0);
+          cv::rectangle(this_sub->overlay, Rect(Point(xx1, yy1), Point(xx2, yy2)), Scalar(255, 0, 0), 1, 8, 0);
         }
       }
-
-      // 욜로박스 초기화
-      // for(int i = 0; i < 5; i++)
-      // {
-      //   for(int j = 0; j < 10; j++)
-      //   {
-      //     yolo_num[i][j] = 0;
-      //   }
-      // }
-//===============================================================================================
+      //================================================================================================
       float opacity = 0.6;
-      cv::addWeighted(this_sub->box_overlay, opacity, this_sub->image_undistorted, 1-opacity, 0, this_sub->image_undistorted);
-      cv::addWeighted(this_sub->yolo_overlay, opacity, this_sub->image_undistorted, 1-opacity, 0, this_sub->image_undistorted);
+      cv::addWeighted(this_sub->overlay, opacity, this_sub->image_undistorted, 1-opacity, 0, this_sub->image_undistorted); // 투영된 박스를 합친다.
     
+      // string windowName = "overlay";
+      // cv::namedWindow(windowName, 3);
+      // cv::imshow(windowName, this_sub->image_undistorted);
+
+      // char ch = cv::waitKey(10);
+      // if(ch == 27) break;
+
+      std_msgs::msg::Float32MultiArray coord;
+      // 투영 후 iou비교해서 매칭시키는 코드 넣기
+      for (int i = 0; i < boxes_2d_cluster.size(); i++)
+      {
+        float max_iou = 0.0;
+        int class_id = -1;
+
+        for (int j = 0; j < boxes_yolo.size(); j++)
+        {
+          float iou = get_iou(boxes_2d_cluster[i], boxes_yolo[j]);
+          if (iou > max_iou)
+          {
+            max_iou = iou;
+            class_id = boxes_yolo[j].color;
+          }
+        }
+        if (max_iou > 0.5)
+        {
+          // cv::rectangle(this_sub->image_undistorted, Rect(Point(boxes_2d_cluster[i].x1, boxes_2d_cluster[i].y1), Point(boxes_2d_cluster[i].x2, boxes_2d_cluster[i].y2)), Scalar(100, 100, 0), 3, 8, 0);
+          // 센터점을 멀티어레이에 넣고 그대로 펍?
+          float center_x = boxes[i].x;
+          float center_y = boxes[i].y;
+          // cout << "center_x : " << center_x << "   center_y : " << center_y << endl;
+          coord.data.push_back(center_x);
+          coord.data.push_back(center_y);
+          coord.data.push_back(class_id);
+          coord.data.push_back(-1000.0);
+        }
+      }
+      this_sub->publish_cone_->publish(coord);
+
+      // imshow
       string windowName = "overlay";
       cv::namedWindow(windowName, 3);
       cv::imshow(windowName, this_sub->image_undistorted);
-
       char ch = cv::waitKey(10);
       if(ch == 27) break;
 
+      //====== 클러스터 박스 초기화 ==========
       this_sub->box_locker = 0;
       boxes.clear();
+      //==================================
+      //======== 욜로박스 초기화 ============
+      this_sub->yolo_locker = 0;
+      boxes_yolo.clear();
+      //==================================
 
-      for(int i = 0; i < 5; i++)
-      {
-        for(int j = 0; j < 10; j++)
-        {
-          yolo_num[i][j] = 0;
-        }
-      }
-
-      loop_rate.sleep();      
+      this_sub->is_rec_image = false;
+      this_sub->is_rec_box = false;
     }
+    loop_rate.sleep();  
   }
 }
+
+// pthread 어떻게 쓰는겨?
+// iou 계산
+// void * ImageLiDARFusion::publish_thread2(void * args)
+// {
+//   ImageLiDARFusion * this_sub = (ImageLiDARFusion *)args;
+//   rclcpp::WallRate loop_rate(10.0);
+//   while(rclcpp::ok())  
+//   {
+//     for(int i = 0; i<10; i++)
+//     {
+//       cout << "2 : " << i << endl;
+//     }
+//     loop_rate.sleep();   
+//   }
+// }
 
 int main(int argc, char **argv)
 {
