@@ -40,10 +40,8 @@ pcl::PointCloud<pcl::PointXYZI>::Ptr copy_raw_pcl_ptr(new pcl::PointCloud<pcl::P
 // 카메라 이미지
 cv::Mat image_color;
 cv::Mat overlay;
-cv::Mat overlay_origin;
 cv::Mat copy_image_color;
 cv::Mat img_HSV;
-cv::Mat img_origin;
 
 // Yolo Global parameter
 std::mutex mut_yolo;
@@ -54,6 +52,16 @@ int yolo_num[10][5];
 
 bool is_rec_image = false;
 bool is_rec_LiDAR = false;
+
+struct Box_yolo
+{
+  float x1;
+  float x2;
+  float y1;
+  float y2;
+  int color;
+};
+std::vector<Box_yolo> boxes_yolo;
 
 class ImageLiDARFusion : public rclcpp::Node
 {
@@ -93,31 +101,23 @@ public:
     this->CameraMat_vector = this->get_parameter("CameraMat").as_double_array();
     this->declare_parameter("DistCoeff", vector<double>());
     this->DistCoeff_vector = this->get_parameter("DistCoeff").as_double_array();
-    // this->declare_parameter("ImageSize", vector<int>());
-    // this->ImageSize_vector = this->get_parameter("ImagSize").get_value<vector<int>>();
+
     this->set_param();
 
-    image_pub_ = this->create_publisher<sensor_msgs::msg::Image>("corrected_image", 10);
+    // image_pub_ = this->create_publisher<sensor_msgs::msg::Image>("corrected_image", 10);
     image_sub_ = this->create_subscription<sensor_msgs::msg::Image>(
-       "/yolo_result", 100,
+       "/video1", rclcpp::SensorDataQoS(),
        [this](const sensor_msgs::msg::Image::SharedPtr msg) -> void
        {
          ImageCallback(msg);
        }); //람다함수를 사용했는데 왜?, 그리고 일반적인 방법으로 하면 동작하지 않는다. 이유를 모르겠다
 
-    LiDAR_pub_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("test_LiDAR", 10);
+    // LiDAR_pub_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("test_LiDAR", 10);
     LiDAR_sub_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(
-      "/velodyne_points", 100,
+      "/velodyne_points", 10,
       [this](const sensor_msgs::msg::PointCloud2::SharedPtr msg) -> void
       {
         LiDARCallback(msg);
-      });
-    
-    yolo_count_sub_ = this->create_subscription<std_msgs::msg::Int16>(
-      "/yolo_count", 10,
-      [this](const std_msgs::msg::Int16::SharedPtr msg) -> void
-      {
-        YOLOCountCallback(msg);
       });
     
     yolo_detect_sub_ = this->create_subscription<vision_msgs::msg::Detection2DArray>(
@@ -126,33 +126,29 @@ public:
       {
         YOLOCallback(msg);
       });
-    
 
     int ret1 = pthread_create(&this->tids1_, NULL, publish_thread, this);
     RCLCPP_INFO(this->get_logger(), "------------ intialize end------------\n");
-
   }
 
   ~ImageLiDARFusion()
   {
-    //pthread_join(this->tids1_, NULL);
+    pthread_join(this->tids1_, NULL);
   }
 
 public:
   void set_param();
   void ImageCallback(const sensor_msgs::msg::Image::SharedPtr msg);
   void LiDARCallback(const sensor_msgs::msg::PointCloud2::SharedPtr msg);
-  void YOLOCountCallback(const std_msgs::msg::Int16::SharedPtr msg);
   void YOLOCallback(const vision_msgs::msg::Detection2DArray::SharedPtr msg);
 
   static void * publish_thread(void * this_sub);
 
 private:
-  rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr image_pub_;
+  // rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr image_pub_;
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr image_sub_;
-  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr LiDAR_pub_;
+  //rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr LiDAR_pub_;
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr LiDAR_sub_;
-  //yolo에서 (object 카운트), (클래스 이름, 박스 좌표) 받아오는 것 추가하기 
   rclcpp::Subscription<std_msgs::msg::Int16>::SharedPtr yolo_count_sub_;
   rclcpp::Subscription<vision_msgs::msg::Detection2DArray>::SharedPtr yolo_detect_sub_;
 };
@@ -191,53 +187,44 @@ void ImageLiDARFusion::set_param()
 
 void ImageLiDARFusion::ImageCallback(const sensor_msgs::msg::Image::SharedPtr msg)
 {
-  rclcpp::WallRate loop_rate(20.0);
-  // cv_bridge::CvImagePtr cv_ptr;
-  // Mat image;
-  // try
-  // {
-  //   cv_ptr = cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::BGR8);
-  // }
-  // catch(cv_bridge::Exception& e)
-  // {
-  //   RCLCPP_ERROR(this->get_logger(), "cv_bridge exception: %s", e.what());
-  //   return;
-  // }
+  cv_bridge::CvImagePtr cv_ptr;
+  Mat image;
+  try
+  {
+    cv_ptr = cv_bridge::toCvCopy(msg, "bgr8");
+  }
+  catch(cv_bridge::Exception& e)
+  {
+    RCLCPP_ERROR(this->get_logger(), "cv_bridge exception: %s", e.what());
+    return;
+  }
 
-  Mat image(msg->height, msg->width, CV_8UC3, const_cast<unsigned char*>(msg->data.data()), msg->step);
-  // img_origin = image.clone();
   if(IS_IMAGE_CORRECTION)
   {
     mut_img.lock();
-    // cv::undistort(cv_ptr->image, image_color, this->CameraMat, this->DistCoeff);
-    // cv_ptr->image = image_color.clone();
-
-    cv::undistort(image, image_color, this->CameraMat, this->DistCoeff);
-    image = image_color.clone();
-
+    cv::undistort(cv_ptr->image, image_color, this->CameraMat, this->DistCoeff);
+    image_color = image_color.clone();
     mut_img.unlock();
   }  
   else
   {
     mut_img.lock();
-    //image_color = cv_ptr->image.clone();
-    image_color = image.clone();
+    image_color = cv_ptr->image.clone();
+    image_color = image_color.clone();
     mut_img.unlock();
   }
-  is_rec_image = true;
-  sensor_msgs::msg::Image::UniquePtr image_msg = std::make_unique<sensor_msgs::msg::Image>();
-  image_msg->height = image_color.rows;
-  image_msg->width = image_color.cols;
-  image_msg->encoding = "bgr8";
-  image_msg->is_bigendian = false;
-  image_msg->step = static_cast<sensor_msgs::msg::Image::_step_type>(image_color.step);
-  size_t size = image_color.step * image_color.rows;
-  image_msg->data.resize(size);
-  memcpy(&image_msg->data[0], image_color.data, size);
 
-  image_pub_->publish(std::move(image_msg));
-  // imshow("image", image_color);
-  // waitKey(1);
+  // is_rec_image = true;
+  // sensor_msgs::msg::Image::UniquePtr image_msg = std::make_unique<sensor_msgs::msg::Image>();
+  // image_msg->height = image_color.rows;
+  // image_msg->width = image_color.cols;
+  // image_msg->encoding = "bgr8";
+  // image_msg->is_bigendian = false;
+  // image_msg->step = static_cast<sensor_msgs::msg::Image::_step_type>(image_color.step);
+  // size_t size = image_color.step * image_color.rows;
+  // image_msg->data.resize(size);
+  // memcpy(&image_msg->data[0], image_color.data, size);
+  // image_pub_->publish(std::move(image_msg));
 }
 
 void ImageLiDARFusion::LiDARCallback(const sensor_msgs::msg::PointCloud2::SharedPtr msg)
@@ -248,13 +235,9 @@ void ImageLiDARFusion::LiDARCallback(const sensor_msgs::msg::PointCloud2::Shared
   is_rec_LiDAR = true;
 }
 
-void ImageLiDARFusion::YOLOCountCallback(const std_msgs::msg::Int16::SharedPtr msg)
-{
-  obj_count = msg->data;
-}
-
 void ImageLiDARFusion::YOLOCallback(const vision_msgs::msg::Detection2DArray::SharedPtr msg)
 {
+  obj_count = msg->detections.size();
   if (obj_count != 0)
   {
     std::string Class_name;
@@ -263,10 +246,7 @@ void ImageLiDARFusion::YOLOCallback(const vision_msgs::msg::Detection2DArray::Sh
 
     for(int i = 0; i<obj_count; i++)
     {
-      // cout << msg->detections[i].results.size() << endl;
-
       Class_name = msg->detections[i].results[0].id;
-      // cout << Class_name << endl;
 
       int color = 0;
       if(Class_name == "blue")
@@ -279,20 +259,17 @@ void ImageLiDARFusion::YOLOCallback(const vision_msgs::msg::Detection2DArray::Sh
       }
       else
       {
-        color = 0;
       }
 
-      yolo_num[i][0] = color;
-      yolo_num[i][1] = msg->detections[i].bbox.center.x - (msg->detections[i].bbox.size_x)/2;
-      yolo_num[i][2] = msg->detections[i].bbox.center.x + (msg->detections[i].bbox.size_x)/2;
-      yolo_num[i][3] = msg->detections[i].bbox.center.y - (msg->detections[i].bbox.size_y)/2;
-      yolo_num[i][4] = msg->detections[i].bbox.center.y + (msg->detections[i].bbox.size_y)/2;
-      
-      // cout << "color : " <<yolo_num[i][0] << "," 
-      // << "좌x : " << yolo_num[i][1] << "," 
-      // << "우x : " << yolo_num[i][2] << "," 
-      // << "하y : " << yolo_num[i][3] << "," 
-      // << "상y : " << yolo_num[i][4] << endl;
+      Box_yolo box_yolo = 
+      {
+        msg->detections[i].bbox.center.x - (msg->detections[i].bbox.size_x)/2, // x1
+        msg->detections[i].bbox.center.x + (msg->detections[i].bbox.size_x)/2, // x2
+        msg->detections[i].bbox.center.y - (msg->detections[i].bbox.size_y)/2, // y1
+        msg->detections[i].bbox.center.y + (msg->detections[i].bbox.size_y)/2, // y2
+        color
+      };
+      boxes_yolo.push_back(box_yolo);
     }
     // cout << "-----------------" << endl;
     mut_yolo.unlock();
@@ -321,9 +298,6 @@ void * ImageLiDARFusion::publish_thread(void * args)
       // cvtColor(copy_image_color, img_HSV, COLOR_BGR2HSV);
       mut_img.unlock();
 
-      // mut_img.lock();
-      // overlay_origin = img_origin.clone();
-      // mut_img.unlock();
       // mut_yolo.lock();
       // copy_img_Yolo = img_Yolo;
       // mut_yolo.unlock();
@@ -395,55 +369,19 @@ void * ImageLiDARFusion::publish_thread(void * args)
 
               int green = min(255, (int) (255 * abs((val - maxVal) / maxVal)));
               int red = min(255, (int) (255 * (1 - abs((val - maxVal) / maxVal))));
-
-              cv::circle(overlay, pt, 1, cv::Scalar(0, green, red), -1);
-              //cv::circle(overlay_origin, pt, 1, cv::Scalar(0, green, red), -1);
-
-              // 욜로 박스치는 부분
-              for(int j = 0; j < obj_count; j++)
-              {
-                // cout << "3" << endl;
-                if((column >= yolo_num[j][1]) && (column <= yolo_num[j][2]))
-                {
-                  // cout << "4" << endl;
-                  if ((row >= yolo_num[j][3]) && (row <= yolo_num[j][4]))
-                  {
-                    // cerr << "Lavacon type is " << yolo_num[j][0] << endl;
-                    // pointColor.intensity = yolo_num[j][0];
-                    if(yolo_num[j][0] == 1)
-                    {
-                      pointColor.intensity = 0.7;
-                    }
-                    else if(yolo_num[j][0] == 2)
-                    {
-                      pointColor.intensity = 0.3;
-                    }
-
-                    break;
-                  }
-                }
-                else
-                {
-                  // cerr << "Lavacon type is 0" << endl;
-                }
-              }
-
-
+              cv::circle(overlay, pt, 2, cv::Scalar(0, green, red), -1);
             }
           }
         }
-      pc_xyzinten->push_back(pointColor);
+      //pc_xyzinten->push_back(pointColor);
       }
 
       float opacity = 0.6;
       cv::addWeighted(overlay, opacity, image_color, 1 - opacity, 0, image_color);
-      //cv::addWeighted(overlay_origin, opacity, img_origin, 1 - opacity, 0, img_origin);
-
 
       string windowName = "LiDAR data on image overlay";
       cv::namedWindow(windowName, 3);
       cv::imshow(windowName, image_color);
-      //cv::imshow("origin", img_origin);
       char ch = cv::waitKey(10);
       if(ch == 27) break;
 
@@ -454,12 +392,12 @@ void * ImageLiDARFusion::publish_thread(void * args)
           yolo_num[i][j] = 0;
         }
       }
-      pc_xyzinten->width = 1;
-      pc_xyzinten->height = pc_xyzinten->points.size();
-      pcl::toROSMsg(*pc_xyzinten, this_sub->colored_msg);
-      this_sub->colored_msg.header.frame_id = "velodyne";
-      this_sub->colored_msg.header.stamp = rclcpp::Clock(RCL_ROS_TIME).now();
-      this_sub->LiDAR_pub_->publish(this_sub->colored_msg);
+      // pc_xyzinten->width = 1;
+      // pc_xyzinten->height = pc_xyzinten->points.size();
+      // pcl::toROSMsg(*pc_xyzinten, this_sub->colored_msg);
+      // this_sub->colored_msg.header.frame_id = "velodyne";
+      // this_sub->colored_msg.header.stamp = rclcpp::Clock(RCL_ROS_TIME).now();
+      // this_sub->LiDAR_pub_->publish(this_sub->colored_msg);
       loop_rate.sleep();
 
     }
