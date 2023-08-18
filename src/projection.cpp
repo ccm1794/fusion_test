@@ -48,10 +48,9 @@ std::mutex mut_yolo;
 std::string Class_name;
 
 int obj_count;
-int yolo_num[10][5];
 
-bool is_rec_image = false;
 bool is_rec_LiDAR = false;
+int lidar_button;
 
 struct Box_yolo
 {
@@ -76,7 +75,6 @@ public:
   Mat CameraExtrinsicMat;
   Mat CameraMat;
   Mat DistCoeff;
-  Mat frame1;
 
   pthread_t tids1_; //스레드 아이디
 
@@ -104,7 +102,6 @@ public:
 
     this->set_param();
 
-    // image_pub_ = this->create_publisher<sensor_msgs::msg::Image>("corrected_image", 10);
     image_sub_ = this->create_subscription<sensor_msgs::msg::Image>(
        "/video1", rclcpp::SensorDataQoS(),
        [this](const sensor_msgs::msg::Image::SharedPtr msg) -> void
@@ -112,22 +109,14 @@ public:
          ImageCallback(msg);
        }); //람다함수를 사용했는데 왜?, 그리고 일반적인 방법으로 하면 동작하지 않는다. 이유를 모르겠다
 
-    // LiDAR_pub_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("test_LiDAR", 10);
     LiDAR_sub_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(
       "/velodyne_points", 10,
       [this](const sensor_msgs::msg::PointCloud2::SharedPtr msg) -> void
       {
         LiDARCallback(msg);
       });
-    
-    yolo_detect_sub_ = this->create_subscription<vision_msgs::msg::Detection2DArray>(
-      "/yolo_detect", 10,
-      [this](const vision_msgs::msg::Detection2DArray::SharedPtr msg) -> void
-      {
-        YOLOCallback(msg);
-      });
 
-    int ret1 = pthread_create(&this->tids1_, NULL, publish_thread, this);
+    // int ret1 = pthread_create(&this->tids1_, NULL, publish_thread, this);
     RCLCPP_INFO(this->get_logger(), "------------ intialize end------------\n");
   }
 
@@ -140,17 +129,11 @@ public:
   void set_param();
   void ImageCallback(const sensor_msgs::msg::Image::SharedPtr msg);
   void LiDARCallback(const sensor_msgs::msg::PointCloud2::SharedPtr msg);
-  void YOLOCallback(const vision_msgs::msg::Detection2DArray::SharedPtr msg);
-
-  static void * publish_thread(void * this_sub);
+  // static void * publish_thread(void * this_sub);
 
 private:
-  // rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr image_pub_;
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr image_sub_;
-  //rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr LiDAR_pub_;
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr LiDAR_sub_;
-  rclcpp::Subscription<std_msgs::msg::Int16>::SharedPtr yolo_count_sub_;
-  rclcpp::Subscription<vision_msgs::msg::Detection2DArray>::SharedPtr yolo_detect_sub_;
 };
 
 
@@ -199,210 +182,183 @@ void ImageLiDARFusion::ImageCallback(const sensor_msgs::msg::Image::SharedPtr ms
     return;
   }
 
-  if(IS_IMAGE_CORRECTION)
+  mut_img.lock();
+  cv::undistort(cv_ptr->image, image_color, this->CameraMat, this->DistCoeff);
+  image_color = image_color.clone();
+  overlay = image_color.clone();
+  mut_img.unlock();
+
+  mut_pc.lock();
+  pcl::copyPointCloud(*raw_pcl_ptr, *copy_raw_pcl_ptr);
+  mut_pc.unlock();
+
+  const int size = copy_raw_pcl_ptr->points.size();
+
+  for (int i = 0; i < size ; i++)
   {
-    mut_img.lock();
-    cv::undistort(cv_ptr->image, image_color, this->CameraMat, this->DistCoeff);
-    image_color = image_color.clone();
-    mut_img.unlock();
-  }  
-  else
-  {
-    mut_img.lock();
-    image_color = cv_ptr->image.clone();
-    image_color = image_color.clone();
-    mut_img.unlock();
+    pcl::PointXYZ temp_;
+    temp_.x = copy_raw_pcl_ptr->points[i].x;
+    temp_.y = copy_raw_pcl_ptr->points[i].y;
+    temp_.z = copy_raw_pcl_ptr->points[i].z;
+
+    float azimuth_ = abs(atan2(temp_.y, temp_.x));
+
+    if(azimuth_ > max_FOV)
+    {
+      continue; //처리하지 않겠다
+    }
+    else if(azimuth_ <= max_FOV)
+    {
+      double a_[4] = {temp_.x, temp_.y, temp_.z, 1.0};
+      cv::Mat pos( 4, 1, CV_64F, a_); // 라이다 좌표
+      cv::Mat newpos(transformMat * pos); // 카메라 좌표로 변환한 것.
+
+      float x = (float)(newpos.at<double>(0, 0) / newpos.at<double>(2, 0));
+      float y = (float)(newpos.at<double>(1, 0) / newpos.at<double>(2, 0));
+
+      float dist_ = sqrt(pow(temp_.x,2) + pow(temp_.y,2) + pow(temp_.z,2));
+
+      if (minlen < dist_ && dist_ < maxlen)
+      {
+        if (x >= 0 && x < img_width && y >= 0 && y < img_height)
+        {
+          int row = int(y);
+          int column = int(x);
+
+          cv::Point pt;
+          pt.x = x;
+          pt.y = y;
+
+          float val = temp_.x; // 라이다 좌표에서 x를 뜻함
+          float maxVal = 100.0;
+
+          int green = min(255, (int) (255 * abs((val - maxVal) / maxVal)));
+          int red = min(255, (int) (255 * (1 - abs((val - maxVal) / maxVal))));
+          cv::circle(overlay, pt, 2, cv::Scalar(0, green, red), -1);
+        }
+        else{}
+      } 
+    } 
   }
+  float opacity = 0.6;
+  cv::addWeighted(overlay, opacity, image_color, 1 - opacity, 0, image_color);
 
-  // is_rec_image = true;
-  // sensor_msgs::msg::Image::UniquePtr image_msg = std::make_unique<sensor_msgs::msg::Image>();
-  // image_msg->height = image_color.rows;
-  // image_msg->width = image_color.cols;
-  // image_msg->encoding = "bgr8";
-  // image_msg->is_bigendian = false;
-  // image_msg->step = static_cast<sensor_msgs::msg::Image::_step_type>(image_color.step);
-  // size_t size = image_color.step * image_color.rows;
-  // image_msg->data.resize(size);
-  // memcpy(&image_msg->data[0], image_color.data, size);
-  // image_pub_->publish(std::move(image_msg));
+  string windowName = "overlay";
+  cv::namedWindow(windowName, 3);
+  cv::imshow(windowName, image_color); 
+  char ch = cv::waitKey(10);
+  lidar_button = 0;
 }
-
 void ImageLiDARFusion::LiDARCallback(const sensor_msgs::msg::PointCloud2::SharedPtr msg)
 {
-  mut_pc.lock();
-  pcl::fromROSMsg(*msg, *raw_pcl_ptr);
-  mut_pc.unlock();
-  is_rec_LiDAR = true;
-}
-
-void ImageLiDARFusion::YOLOCallback(const vision_msgs::msg::Detection2DArray::SharedPtr msg)
-{
-  obj_count = msg->detections.size();
-  if (obj_count != 0)
+  if (lidar_button == 0)
   {
-    std::string Class_name;
-
-    mut_yolo.lock();
-
-    for(int i = 0; i<obj_count; i++)
-    {
-      Class_name = msg->detections[i].results[0].id;
-
-      int color = 0;
-      if(Class_name == "blue")
-      {
-        color = 1;
-      }
-      else if(Class_name == "orange")
-      {
-        color = 2;
-      }
-      else
-      {
-      }
-
-      Box_yolo box_yolo = 
-      {
-        msg->detections[i].bbox.center.x - (msg->detections[i].bbox.size_x)/2, // x1
-        msg->detections[i].bbox.center.x + (msg->detections[i].bbox.size_x)/2, // x2
-        msg->detections[i].bbox.center.y - (msg->detections[i].bbox.size_y)/2, // y1
-        msg->detections[i].bbox.center.y + (msg->detections[i].bbox.size_y)/2, // y2
-        color
-      };
-      boxes_yolo.push_back(box_yolo);
-    }
-    // cout << "-----------------" << endl;
-    mut_yolo.unlock();
-  }
-  else
-  {
+    lidar_button = 1;
+    mut_pc.lock();
+    pcl::fromROSMsg(*msg, *raw_pcl_ptr);
+    mut_pc.unlock();
   }
 }
 
-void * ImageLiDARFusion::publish_thread(void * args)
-{
-  ImageLiDARFusion * this_sub = (ImageLiDARFusion *)args;
-  rclcpp::WallRate loop_rate(10.0);
-  while(rclcpp::ok())
-  {
-    if (is_rec_image && is_rec_LiDAR)
-    {
-      //**point** : Syncronize topics : PointCloud, Image, Yolomsg 싱크 맞추는게 중요!
-      mut_pc.lock();
-      pcl::copyPointCloud(*raw_pcl_ptr, *copy_raw_pcl_ptr);
-      mut_pc.unlock();
 
-      mut_img.lock();
-      //copy_image_color = image_color.clone();
-      overlay = image_color.clone();
-      // cvtColor(copy_image_color, img_HSV, COLOR_BGR2HSV);
-      mut_img.unlock();
+// void * ImageLiDARFusion::publish_thread(void * args)
+// {
+//   ImageLiDARFusion * this_sub = (ImageLiDARFusion *)args;
+//   rclcpp::WallRate loop_rate(10.0);
+//   while(rclcpp::ok())
+//   {
+//     if (is_rec_LiDAR)
+//     {
+//       //**point** : Syncronize topics : PointCloud, Image, Yolomsg 싱크 맞추는게 중요!
+//       mut_pc.lock();
+//       pcl::copyPointCloud(*raw_pcl_ptr, *copy_raw_pcl_ptr);
+//       mut_pc.unlock();
 
-      // mut_yolo.lock();
-      // copy_img_Yolo = img_Yolo;
-      // mut_yolo.unlock();
+//       mut_img.lock();
+//       overlay = image_color.clone();
+//       mut_img.unlock();
 
-      pcl::PointCloud<pcl::PointXYZI>::Ptr pc_xyzinten(new pcl::PointCloud<pcl::PointXYZI>);
-      const int size = copy_raw_pcl_ptr->points.size();
+//       const int size = copy_raw_pcl_ptr->points.size();
+//       Mat image_show = image_color.clone();
 
-      // cout << "point cloud size : " << size << endl;
-
-      Mat image_show = image_color.clone();
-
-      for (int i = 0; i < size ; i++)
-      {
-        pcl::PointXYZI pointColor;
+//       for (int i = 0; i < size ; i++)
+//       {
+//         pcl::PointXYZI pointColor;
         
-        // **앵글이 카메라 수평 화각 안에 들어오는가?**
-        pcl::PointXYZ temp_;
-        temp_.x = copy_raw_pcl_ptr->points[i].x;
-        temp_.y = copy_raw_pcl_ptr->points[i].y;
-        temp_.z = copy_raw_pcl_ptr->points[i].z;
+//         // **앵글이 카메라 수평 화각 안에 들어오는가?**
+//         pcl::PointXYZ temp_;
+//         temp_.x = copy_raw_pcl_ptr->points[i].x;
+//         temp_.y = copy_raw_pcl_ptr->points[i].y;
+//         temp_.z = copy_raw_pcl_ptr->points[i].z;
 
-        float R_ = sqrt(pow(temp_.x,2) + pow(temp_.y,2)); // 라이다로부터 수평거리
-        float azimuth_ = abs(atan2(temp_.y, temp_.x)); // 방위각
-        float elevation_ = abs(atan2(R_, temp_.z)); // 고도각
+//         // float R_ = sqrt(pow(temp_.x,2) + pow(temp_.y,2)); // 라이다로부터 수평거리
+//         float azimuth_ = abs(atan2(temp_.y, temp_.x)); // 방위각
+//         // float elevation_ = abs(atan2(R_, temp_.z)); // 고도각
 
-        pointColor.x = copy_raw_pcl_ptr->points[i].x;
-        pointColor.y = copy_raw_pcl_ptr->points[i].y;
-        pointColor.z = copy_raw_pcl_ptr->points[i].z;
+//         pointColor.x = copy_raw_pcl_ptr->points[i].x;
+//         pointColor.y = copy_raw_pcl_ptr->points[i].y;
+//         pointColor.z = copy_raw_pcl_ptr->points[i].z;
 
-        if(azimuth_ > (this_sub->max_FOV))
-        {
-          // pointColor.intensity=0.;
-          continue; //처리하지 않겠다
-        }
-        else if(azimuth_ <= (this_sub->max_FOV))
-        {
-          //색깔점에 좌표 대입
+//         if(azimuth_ > (this_sub->max_FOV))
+//         {
+//           continue; //처리하지 않겠다
+//         }
+//         else if(azimuth_ <= (this_sub->max_FOV))
+//         {
+//           //색깔점에 좌표 대입
           
-          //라이다 좌표 행렬(4,1)
-          double a_[4] = {pointColor.x, pointColor.y, pointColor.z, 1.0};
-          cv::Mat pos( 4, 1, CV_64F, a_); // 라이다 좌표
+//           //라이다 좌표 행렬(4,1)
+//           double a_[4] = {pointColor.x, pointColor.y, pointColor.z, 1.0};
+//           cv::Mat pos( 4, 1, CV_64F, a_); // 라이다 좌표
 
-          //카메라 원점 xyz 좌표 (3,1)생성
-          cv::Mat newpos(this_sub->transformMat * pos); // 카메라 좌표로 변환한 것.
+//           //카메라 원점 xyz 좌표 (3,1)생성
+//           cv::Mat newpos(this_sub->transformMat * pos); // 카메라 좌표로 변환한 것.
 
-          //카메라 좌표(x,y) 생성
-          float x = (float)(newpos.at<double>(0, 0) / newpos.at<double>(2, 0));
-          float y = (float)(newpos.at<double>(1, 0) / newpos.at<double>(2, 0));
+//           //카메라 좌표(x,y) 생성
+//           float x = (float)(newpos.at<double>(0, 0) / newpos.at<double>(2, 0));
+//           float y = (float)(newpos.at<double>(1, 0) / newpos.at<double>(2, 0));
 
-          // trims viewport according to image size
-          float dist_ = sqrt(pow(pointColor.x,2) + pow(pointColor.y,2) + pow(pointColor.z,2));
+//           // trims viewport according to image size
+//           float dist_ = sqrt(pow(pointColor.x,2) + pow(pointColor.y,2) + pow(pointColor.z,2));
 
-          if (this_sub->minlen < dist_ && dist_ < this_sub->maxlen)
-          {
-            if (x >= 0 && x < this_sub->img_width && y >= 0 && y < this_sub->img_height)
-            {
-              // cout << "2" << endl; // 여기서부터 코드가 안돈다.->내부 파라미터가 올바르지 않아 그랬음
-              // imread BGR (BITMAP);
-              int row = int(y);
-              int column = int(x);
-              pointColor.intensity = 0.9;
+//           if (this_sub->minlen < dist_ && dist_ < this_sub->maxlen)
+//           {
+//             if (x >= 0 && x < this_sub->img_width && y >= 0 && y < this_sub->img_height)
+//             {
+//               // cout << "2" << endl; // 여기서부터 코드가 안돈다.->내부 파라미터가 올바르지 않아 그랬음
+//               // imread BGR (BITMAP);
+//               int row = int(y);
+//               int column = int(x);
+//               pointColor.intensity = 0.9;
 
-              cv::Point pt;
-              pt.x = x;
-              pt.y = y;
+//               cv::Point pt;
+//               pt.x = x;
+//               pt.y = y;
 
-              float val = pointColor.x; // 라이다 좌표에서 x를 뜻함
-              float maxVal = 100.0;
+//               float val = pointColor.x; // 라이다 좌표에서 x를 뜻함
+//               float maxVal = 100.0;
 
-              int green = min(255, (int) (255 * abs((val - maxVal) / maxVal)));
-              int red = min(255, (int) (255 * (1 - abs((val - maxVal) / maxVal))));
-              cv::circle(overlay, pt, 2, cv::Scalar(0, green, red), -1);
-            }
-          }
-        }
-      //pc_xyzinten->push_back(pointColor);
-      }
+//               int green = min(255, (int) (255 * abs((val - maxVal) / maxVal)));
+//               int red = min(255, (int) (255 * (1 - abs((val - maxVal) / maxVal))));
+//               cv::circle(overlay, pt, 2, cv::Scalar(0, green, red), -1);
+//             }
+//           }
+//         }
+//       }
 
-      float opacity = 0.6;
-      cv::addWeighted(overlay, opacity, image_color, 1 - opacity, 0, image_color);
+//       float opacity = 0.6;
+//       cv::addWeighted(overlay, opacity, image_color, 1 - opacity, 0, image_color);
 
-      string windowName = "LiDAR data on image overlay";
-      cv::namedWindow(windowName, 3);
-      cv::imshow(windowName, image_color);
-      char ch = cv::waitKey(10);
-      if(ch == 27) break;
+//       string windowName = "LiDAR data on image overlay";
+//       cv::namedWindow(windowName, 3);
+//       cv::imshow(windowName, image_color);
+//       char ch = cv::waitKey(10);
+//       if(ch == 27) break;
 
-      for(int i = 0; i < 5; i++)
-      {
-        for(int j = 0; j < 10; j++)
-        {
-          yolo_num[i][j] = 0;
-        }
-      }
-      // pc_xyzinten->width = 1;
-      // pc_xyzinten->height = pc_xyzinten->points.size();
-      // pcl::toROSMsg(*pc_xyzinten, this_sub->colored_msg);
-      // this_sub->colored_msg.header.frame_id = "velodyne";
-      // this_sub->colored_msg.header.stamp = rclcpp::Clock(RCL_ROS_TIME).now();
-      // this_sub->LiDAR_pub_->publish(this_sub->colored_msg);
-      loop_rate.sleep();
-
-    }
-  }
-}
+//       loop_rate.sleep();
+//     }
+//   }
+// }
 
 int main(int argc, char **argv)
 {
