@@ -129,7 +129,6 @@ public:
   void set_param();
   void ImageCallback(const sensor_msgs::msg::Image::SharedPtr msg);
   void LiDARCallback(const sensor_msgs::msg::PointCloud2::SharedPtr msg);
-  // static void * publish_thread(void * this_sub);
 
 private:
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr image_sub_;
@@ -259,106 +258,6 @@ void ImageLiDARFusion::LiDARCallback(const sensor_msgs::msg::PointCloud2::Shared
     mut_pc.unlock();
   }
 }
-
-
-// void * ImageLiDARFusion::publish_thread(void * args)
-// {
-//   ImageLiDARFusion * this_sub = (ImageLiDARFusion *)args;
-//   rclcpp::WallRate loop_rate(10.0);
-//   while(rclcpp::ok())
-//   {
-//     if (is_rec_LiDAR)
-//     {
-//       //**point** : Syncronize topics : PointCloud, Image, Yolomsg 싱크 맞추는게 중요!
-//       mut_pc.lock();
-//       pcl::copyPointCloud(*raw_pcl_ptr, *copy_raw_pcl_ptr);
-//       mut_pc.unlock();
-
-//       mut_img.lock();
-//       overlay = image_color.clone();
-//       mut_img.unlock();
-
-//       const int size = copy_raw_pcl_ptr->points.size();
-//       Mat image_show = image_color.clone();
-
-//       for (int i = 0; i < size ; i++)
-//       {
-//         pcl::PointXYZI pointColor;
-        
-//         // **앵글이 카메라 수평 화각 안에 들어오는가?**
-//         pcl::PointXYZ temp_;
-//         temp_.x = copy_raw_pcl_ptr->points[i].x;
-//         temp_.y = copy_raw_pcl_ptr->points[i].y;
-//         temp_.z = copy_raw_pcl_ptr->points[i].z;
-
-//         // float R_ = sqrt(pow(temp_.x,2) + pow(temp_.y,2)); // 라이다로부터 수평거리
-//         float azimuth_ = abs(atan2(temp_.y, temp_.x)); // 방위각
-//         // float elevation_ = abs(atan2(R_, temp_.z)); // 고도각
-
-//         pointColor.x = copy_raw_pcl_ptr->points[i].x;
-//         pointColor.y = copy_raw_pcl_ptr->points[i].y;
-//         pointColor.z = copy_raw_pcl_ptr->points[i].z;
-
-//         if(azimuth_ > (this_sub->max_FOV))
-//         {
-//           continue; //처리하지 않겠다
-//         }
-//         else if(azimuth_ <= (this_sub->max_FOV))
-//         {
-//           //색깔점에 좌표 대입
-          
-//           //라이다 좌표 행렬(4,1)
-//           double a_[4] = {pointColor.x, pointColor.y, pointColor.z, 1.0};
-//           cv::Mat pos( 4, 1, CV_64F, a_); // 라이다 좌표
-
-//           //카메라 원점 xyz 좌표 (3,1)생성
-//           cv::Mat newpos(this_sub->transformMat * pos); // 카메라 좌표로 변환한 것.
-
-//           //카메라 좌표(x,y) 생성
-//           float x = (float)(newpos.at<double>(0, 0) / newpos.at<double>(2, 0));
-//           float y = (float)(newpos.at<double>(1, 0) / newpos.at<double>(2, 0));
-
-//           // trims viewport according to image size
-//           float dist_ = sqrt(pow(pointColor.x,2) + pow(pointColor.y,2) + pow(pointColor.z,2));
-
-//           if (this_sub->minlen < dist_ && dist_ < this_sub->maxlen)
-//           {
-//             if (x >= 0 && x < this_sub->img_width && y >= 0 && y < this_sub->img_height)
-//             {
-//               // cout << "2" << endl; // 여기서부터 코드가 안돈다.->내부 파라미터가 올바르지 않아 그랬음
-//               // imread BGR (BITMAP);
-//               int row = int(y);
-//               int column = int(x);
-//               pointColor.intensity = 0.9;
-
-//               cv::Point pt;
-//               pt.x = x;
-//               pt.y = y;
-
-//               float val = pointColor.x; // 라이다 좌표에서 x를 뜻함
-//               float maxVal = 100.0;
-
-//               int green = min(255, (int) (255 * abs((val - maxVal) / maxVal)));
-//               int red = min(255, (int) (255 * (1 - abs((val - maxVal) / maxVal))));
-//               cv::circle(overlay, pt, 2, cv::Scalar(0, green, red), -1);
-//             }
-//           }
-//         }
-//       }
-
-//       float opacity = 0.6;
-//       cv::addWeighted(overlay, opacity, image_color, 1 - opacity, 0, image_color);
-
-//       string windowName = "LiDAR data on image overlay";
-//       cv::namedWindow(windowName, 3);
-//       cv::imshow(windowName, image_color);
-//       char ch = cv::waitKey(10);
-//       if(ch == 27) break;
-
-//       loop_rate.sleep();
-//     }
-//   }
-// }
 
 int main(int argc, char **argv)
 {
