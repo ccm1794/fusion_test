@@ -100,10 +100,11 @@ public:
     this->declare_parameter("DistCoeff", vector<double>());
     this->DistCoeff_vector = this->get_parameter("DistCoeff").as_double_array();
 
+
     this->set_param();
 
     image_sub_ = this->create_subscription<sensor_msgs::msg::Image>(
-       "/video1", rclcpp::SensorDataQoS(),
+       "/video1", 10,
        [this](const sensor_msgs::msg::Image::SharedPtr msg) -> void
        {
          ImageCallback(msg);
@@ -122,7 +123,7 @@ public:
 
   ~ImageLiDARFusion()
   {
-    pthread_join(this->tids1_, NULL);
+    // pthread_join(this->tids1_, NULL);
   }
 
 public:
@@ -139,32 +140,27 @@ private:
 void ImageLiDARFusion::set_param()
 {
   // 받아온 파라미터
-  Mat CameraExtrinsicMat_(4, 4, CV_64F, CameraExtrinsic_vector.data());
-  Mat CameraMat_(3, 3, CV_64F, CameraMat_vector.data()); 
-  Mat DistCoeffMat_(1, 4, CV_64F, DistCoeff_vector.data());
+  Mat CameraExtrinsicMat;
+  Mat concatedMat;
 
-  CameraExtrinsicMat_.copyTo(this->CameraExtrinsicMat);
+  Mat CameraExtrinsicMat_(4,4, CV_64F, CameraExtrinsic_vector.data());
+  Mat CameraMat_(3,3, CV_64F, CameraMat_vector.data());
+  Mat DistCoeffMat_(1,4, CV_64F, DistCoeff_vector.data());
+
+  //위에 있는 내용 복사
+  CameraExtrinsicMat_.copyTo(CameraExtrinsicMat);
   CameraMat_.copyTo(this->CameraMat);
   DistCoeffMat_.copyTo(this->DistCoeff);
-  
 
   //재가공 : 회전변환행렬, 평행이동행렬
   Mat Rlc = CameraExtrinsicMat(cv::Rect(0,0,3,3));
   Mat Tlc = CameraExtrinsicMat(cv::Rect(3,0,1,3));
 
-  cout << "Tlc : " << Tlc << "\n";
+  cv::hconcat(Rlc, Tlc, concatedMat);
 
-  cv::hconcat(Rlc, Tlc, this->concatedMat);
+  this->transformMat = this->CameraMat * concatedMat;
 
-  cout << "concatedMat : " << this->concatedMat << "\n";
-
-  //재가공 : transformMat
-  this->transformMat = this->CameraMat * this->concatedMat;
-
-  //재가공 : image_size
-  // this->img_height = this->ImageSize_vector[0];
-  // this->img_width = this->ImageSize_vector[1];
-  RCLCPP_INFO(this->get_logger(), "ok");
+  RCLCPP_INFO(this->get_logger(), "transform Matrix ready");
 }
 
 void ImageLiDARFusion::ImageCallback(const sensor_msgs::msg::Image::SharedPtr msg)
@@ -200,7 +196,7 @@ void ImageLiDARFusion::ImageCallback(const sensor_msgs::msg::Image::SharedPtr ms
     temp_.y = copy_raw_pcl_ptr->points[i].y;
     temp_.z = copy_raw_pcl_ptr->points[i].z;
 
-    float azimuth_ = abs(atan2(temp_.y, temp_.x));
+    float azimuth_ = abs(atan2(temp_.y, temp_.x)); //atan2(y,x) : y가 -면 -값 나옴 +면 +값 나옴
 
     if(azimuth_ > max_FOV)
     {
