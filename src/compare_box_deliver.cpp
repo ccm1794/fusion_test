@@ -191,17 +191,17 @@ public:
 
     // 결과 퍼블리시
     publish_cone_ = this->create_publisher<std_msgs::msg::Float32MultiArray>(
-      "/coord_xy", 10);
+      "/coord_xy", rclcpp::SensorDataQoS());
 
     publish_point_ = this->create_publisher<sensor_msgs::msg::PointCloud2>(
       "/coord_xyz", 10);
 
-    marker_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>(
-      "/marker", 10);
+    // marker_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>(
+    //   "/marker", 10);
 
     // 타이머 콜백으로 박스 매칭함수 실행
     auto timer_callback = [this]() -> void {FusionCallback();};
-    timer_ = create_wall_timer(80ms, timer_callback); // 10hz
+    timer_ = create_wall_timer(1ms, timer_callback); // 10hz
     
     RCLCPP_INFO(this->get_logger(), "------------initialize end------------\n");
   }
@@ -221,7 +221,7 @@ private:
   rclcpp::Subscription<vision_msgs::msg::Detection3DArray>::SharedPtr lidar_box_sub_;  
   rclcpp::Publisher<std_msgs::msg::Float32MultiArray>::SharedPtr publish_cone_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr publish_point_;
-  rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr marker_pub_;
+  // rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr marker_pub_;
   rclcpp::TimerBase::SharedPtr timer_;
 };
 
@@ -441,31 +441,31 @@ void ImageLiDARFusion::FusionCallback()
         coord_cloud->push_back(coord_);
 
         // visualization msg : text
-        visualization_msgs::msg::Marker text;
-        text.header.frame_id = "velodyne";
-        text.header.stamp = this->now();
-        text.ns = "text";
-        if (class_id == 1){text.text = "A1"; text.color.r = 1.0; text.color.g = 0.0; text.color.b = 0.0;}
-        else if (class_id == 2){text.text = "A2"; text.color.r = 0.0; text.color.g = 1.0; text.color.b = 0.0;}
-        else if (class_id == 3){text.text = "A3"; text.color.r = 0.0; text.color.g = 0.0; text.color.b = 1.0;}
-        else if (class_id == 4){text.text = "B1"; text.color.r = 1.0; text.color.g = 1.0; text.color.b = 0.0;}
-        else if (class_id == 5){text.text = "B2"; text.color.r = 1.0; text.color.g = 0.0; text.color.b = 1.0;}
-        else if (class_id == 6){text.text = "B3"; text.color.r = 0.0; text.color.g = 1.0; text.color.b = 1.0;}
-        else{text.text = "None";}
-        text.id = i;
-        text.type = visualization_msgs::msg::Marker::TEXT_VIEW_FACING;
-        text.color.a = 1.0;
-        text.scale.z = 1.0;
-        text.action = visualization_msgs::msg::Marker::ADD;
-        text.pose.orientation.w = 1.0;
-        text.pose.position.x = center_x;
-        text.pose.position.y = center_y;
-        text.lifetime.nanosec = 100000000;
-        text_array.markers.push_back(text);
+        // visualization_msgs::msg::Marker text;
+        // text.header.frame_id = "velodyne";
+        // text.header.stamp = this->now();
+        // text.ns = "text";
+        // if (class_id == 1){text.text = "A1"; text.color.r = 1.0; text.color.g = 0.0; text.color.b = 0.0;}
+        // else if (class_id == 2){text.text = "A2"; text.color.r = 0.0; text.color.g = 1.0; text.color.b = 0.0;}
+        // else if (class_id == 3){text.text = "A3"; text.color.r = 0.0; text.color.g = 0.0; text.color.b = 1.0;}
+        // else if (class_id == 4){text.text = "B1"; text.color.r = 1.0; text.color.g = 1.0; text.color.b = 0.0;}
+        // else if (class_id == 5){text.text = "B2"; text.color.r = 1.0; text.color.g = 0.0; text.color.b = 1.0;}
+        // else if (class_id == 6){text.text = "B3"; text.color.r = 0.0; text.color.g = 1.0; text.color.b = 1.0;}
+        // else{text.text = "None";}
+        // text.id = i;
+        // text.type = visualization_msgs::msg::Marker::TEXT_VIEW_FACING;
+        // text.color.a = 1.0;
+        // text.scale.z = 1.0;
+        // text.action = visualization_msgs::msg::Marker::ADD;
+        // text.pose.orientation.w = 1.0;
+        // text.pose.position.x = center_x;
+        // text.pose.position.y = center_y;
+        // text.lifetime.nanosec = 100000000;
+        // text_array.markers.push_back(text);
       }
     }
-    marker_pub_->publish(text_array);
-    text_array.markers.clear();
+    // marker_pub_->publish(text_array);
+    // text_array.markers.clear();
 
     // 플래닝으로 가는 데이터
     this->publish_cone_->publish(coord);
